@@ -8,8 +8,7 @@ The current MVP gives you:
 - Backfill for channels the bot has joined.
 - arXiv metadata and arXiv/Crossref-style BibTeX.
 - Search by paper text, channel, sharer name, date, and share count.
-- A local Slack simulator at `/demo/slack`.
-- Shared-password access for demos.
+- Shared-password access.
 
 ## Run With Docker
 
@@ -24,7 +23,6 @@ Edit `.env`:
 ```bash
 APP_SECRET_KEY=replace-with-a-random-secret
 SHARED_PASSWORD=papers
-DEMO_MODE=true
 SLACK_SIGNING_SECRET=
 SLACK_BOT_TOKEN=
 ```
@@ -52,7 +50,7 @@ Log in with `SHARED_PASSWORD`.
 Clear local data:
 
 ```bash
-docker compose exec api python scripts/reset_demo.py
+docker compose exec api python scripts/reset_archive.py
 ```
 
 Delete the whole Postgres volume:
@@ -60,30 +58,6 @@ Delete the whole Postgres volume:
 ```bash
 docker compose down -v
 ```
-
-## Local Slack Simulator
-
-Open:
-
-```text
-http://localhost:8000/demo/slack
-```
-
-Paste an arXiv link into the message box. The simulator calls the same ingestion code as real Slack events, so it gives you a local demo without Slack approval.
-
-Simulator names live in:
-
-```text
-app/demo_config.py
-```
-
-Known fixture metadata lives in:
-
-```text
-app/demo_data.py
-```
-
-Those fixtures only fill metadata faster for a few demo arXiv IDs. The app still supports new arXiv links.
 
 ## Slack Setup
 
@@ -230,7 +204,7 @@ Docker uses Postgres and matches the intended deployment shape.
 - `app/services/citations.py`: arXiv/Crossref BibTeX fetch.
 - `app/services/search.py`: keyword and filter search.
 - `app/extractors/arxiv.py`: arXiv URL normalization and Atom parsing.
-- `scripts/reset_demo.py`: clears stored data.
+- `scripts/reset_archive.py`: clears stored data.
 - `scripts/backfill_joined_channels.py`: backfills joined Slack channels.
 - `scripts/backfill_channel.py`: backfills one Slack channel.
 - `CODEX.md`: design notes and current project memory.
@@ -241,4 +215,4 @@ Docker uses Postgres and matches the intended deployment shape.
 pytest
 ```
 
-The tests cover arXiv normalization, Slack event parsing, dedupe, search filters, BibTeX, the simulator path, and backfill helpers.
+The tests cover arXiv normalization, Slack event parsing, dedupe, search filters, BibTeX, and backfill helpers.

@@ -4,10 +4,9 @@ from fastapi.testclient import TestClient
 
 from app.auth import auth_token
 from app.database import get_db
-from app.demo_data import apply_demo_fixtures
 from app.extractors.base import PaperMetadata
 from app.main import app
-from app.models import Paper
+from app.models import Paper, PaperCitation
 from app.services.ingestion import SlackMessage, ingest_slack_message
 from app.services.metadata import apply_metadata
 
@@ -76,30 +75,7 @@ def test_search_ignores_blank_dates(db_session):
     assert "Attention Is All You Need" in partial.json()["html"]
 
 
-def test_demo_slack_post_uses_real_ingestion_path(db_session):
-    client = _client(db_session)
-
-    response = client.post(
-        "/demo/slack",
-        data={
-            "channel_id": "CROBOT",
-            "user_id": "UADA",
-            "text": "saving this https://arxiv.org/abs/1706.03762",
-        },
-        cookies=_auth_cookie(),
-        follow_redirects=False,
-    )
-    apply_demo_fixtures(db_session)
-
-    assert response.status_code == 303
-    assert db_session.query(Paper).filter(Paper.source_id == "1706.03762").count() == 1
-
-    page = client.get("/demo/slack", cookies=_auth_cookie())
-    assert "Recent simulated mentions" not in page.text
-    assert "Known fixtures" not in page.text
-
-
-def test_demo_fixtures_store_arxiv_style_citation(db_session):
+def test_bibtex_endpoint_prefers_stored_citation(db_session):
     ingest_slack_message(
         db_session,
         SlackMessage(
@@ -114,10 +90,17 @@ def test_demo_fixtures_store_arxiv_style_citation(db_session):
             text="https://arxiv.org/abs/1706.03762",
         ),
     )
-    apply_demo_fixtures(db_session)
+    paper = db_session.query(Paper).one()
+    db_session.add(
+        PaperCitation(
+            paper_id=paper.id,
+            provider="arXiv API",
+            source_url="https://arxiv.org/bibtex/1706.03762",
+            bibtex="@misc{vaswani2023attentionneed,\n  title={Attention Is All You Need}\n}\n",
+        )
+    )
     db_session.commit()
 
-    paper = db_session.query(Paper).one()
     assert paper.citation is not None
     assert paper.citation.provider == "arXiv API"
     assert "vaswani2023attentionneed" in paper.citation.bibtex

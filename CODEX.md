@@ -2,105 +2,98 @@
 
 ## Product Intent
 
-This project is a greenfield MVP for a Mila research group workflow: researchers often share arXiv and other paper links in Slack, and the PI had previously mentioned wanting a way to automatically categorize/archive them. The MVP should prove the value of a Slack-connected paper memory before asking for lab-wide adoption or Slack admin approval.
+This project archives papers shared in Slack for a research group. The user now has a test Slack workspace, so the app should use real Slack Events and real backfill for demos. Do not reintroduce the old fake Slack simulator.
 
-The product should feel like a quiet research utility, not a social feed and not an LLM demo. The first version is archive-only:
+MVP scope:
 
-- Collect direct paper links from Slack.
+- Ingest direct paper links from Slack.
+- Start with arXiv.
 - Deduplicate repeated shares.
-- Store where each paper was shared.
-- Search by title, author, abstract, category, channel, sharer, and date.
-- Show duplicate/share counts without turning it into upvotes.
-- Export usable BibTeX.
+- Store each Slack share as a mention on one canonical paper.
+- Search by paper text, channel, sharer name, date, and share count.
+- Export BibTeX.
 
-Explicitly out of scope for MVP:
+Keep out of MVP:
 
-- LLM summaries.
-- LLM classification.
+- LLM summaries or classification.
 - Semantic search.
 - Chatbot search.
 - Weekly digests.
-- Reading status, importance levels, likes, or social features.
-- LinkedIn extraction unless the arXiv link appears directly in Slack text.
+- Reading status, importance levels, likes, or social behavior.
+- LinkedIn scraping.
 - Full-text PDF parsing.
-
-The demo should be convincing even before real Slack approval. That is why the app has a local simulator at `/demo/slack`, which uses the same ingestion code as real Slack events.
 
 ## UX Direction
 
-The UI should be web app-first. Slack is an ingestion source, not the primary interaction surface. Avoid Slack replies or noisy bot behavior.
+The UI should feel like a quiet research utility. Slack sends data in; the web app lets people find it.
 
 Current surfaces:
 
 - `/`: Search page with in-place live search.
 - `/papers/{id}`: Paper detail page.
-- `/demo/slack`: Tiny fake Slack-like message composer for local demos.
-- `/status`: Small operator/status page.
+- `/status`: Small status page.
+- `/login`: Shared-password gate.
 
-Design tone:
+Decisions already made:
 
-- Dense, quiet, archival.
-- Usable by researchers repeatedly.
-- No landing page or marketing explanation.
-- Avoid cards inside cards and decorative noise.
-- Keep the simulator simple: channel, sender, text box, post button.
-
-Important UX decisions already made:
-
-- Search updates in-place through `/search/results`; no full page reload after typing.
-- Default sort is `recent`; second option is `most shared`.
-- Relevance sort was removed because we do not have a meaningful relevance model yet.
+- Search updates through `/search/results`; no full page reload while typing.
+- Default sort is `recent`.
+- Secondary sort is `most shared`.
+- Relevance sort was removed.
 - Blank date filters mean all-time.
-- BibTeX opens in a modal on the paper page, not a raw terminal-like text page.
-- The raw `.bib` endpoint still exists for direct download/use.
+- Category filter and category tags were removed from the main search page.
+- Sharer filter is a text input, not a dropdown.
+- BibTeX opens in a modal on the paper page.
+- Raw `.bib` endpoint stays available.
 
 ## Architecture
 
 Stack:
 
 - Python/FastAPI.
-- Server-rendered Jinja templates.
+- Jinja templates.
 - Light vanilla JS.
 - SQLAlchemy ORM.
 - Postgres in Docker Compose.
-- SQLite works for local direct `uvicorn` demos.
-- Worker process for metadata refresh and scheduled catch-up.
+- SQLite for direct local `uvicorn` work.
+- Worker process for metadata refresh and Slack catch-up.
 
 Docker services:
 
 - `api`: FastAPI web app.
 - `db`: Postgres.
-- `worker`: metadata refresh and Slack catch-up.
+- `worker`: metadata refresh and channel catch-up.
 
-Core model split:
+Core model:
 
-- A `Paper` is canonical.
-- A `SlackMention` is one share of that paper in Slack.
-- Multiple Slack mentions attach to one paper.
-
-This is important because repeated Slack shares should increment duplicate/share count, not create duplicate paper rows.
+- `Paper` is canonical.
+- `SlackMention` records one Slack share.
+- Many mentions can point at one paper.
 
 ## Important Files
 
-- `app/main.py`: FastAPI routes, auth, web pages, Slack Events endpoint, demo simulator routes.
+- `app/main.py`: routes, auth, search pages, Slack Events endpoint.
 - `app/models.py`: SQLAlchemy tables.
-- `app/services/ingestion.py`: Slack-like message ingestion, URL extraction, dedupe.
-- `app/services/slack.py`: Slack signature verification, event conversion, API client, backfill.
-- `app/services/metadata.py`: arXiv metadata refresh and retry behavior.
-- `app/services/citations.py`: arXiv/Crossref-style BibTeX fetching.
-- `app/services/search.py`: keyword/filter search.
-- `app/extractors/arxiv.py`: arXiv URL normalization and arXiv API parsing.
-- `app/demo_config.py`: fake local simulator channels/users.
-- `app/demo_data.py`: demo metadata/BibTeX fixtures for known papers.
-- `scripts/reset_demo.py`: clears local/demo data.
-- `scripts/backfill_channel.py`: real Slack channel backfill by channel ID.
-- `tests/`: pytest coverage.
+- `app/services/ingestion.py`: URL parsing, message ingestion, dedupe.
+- `app/services/slack.py`: Slack signature checks, Web API client, event/backfill helpers.
+- `app/services/metadata.py`: arXiv metadata refresh.
+- `app/services/citations.py`: arXiv/Crossref BibTeX fetch.
+- `app/services/search.py`: keyword and filter search.
+- `app/extractors/arxiv.py`: arXiv URL normalization and Atom parsing.
+- `scripts/reset_archive.py`: clears stored archive data.
+- `scripts/backfill_joined_channels.py`: backfills channels the bot has joined.
+- `scripts/backfill_channel.py`: backfills one Slack channel.
 
-`scripts/seed_demo.py` was intentionally deleted. It used to preload three sample papers, but the user disliked static default content. The demo should start empty and be populated through the simulator.
+Deleted on purpose:
+
+- `scripts/seed_demo.py`
+- `app/demo_config.py`
+- `app/demo_data.py`
+- `app/templates/demo_slack.html`
 
 ## Data Model Notes
 
-Main tables:
+Tables:
 
 - `papers`
 - `paper_citations`
@@ -109,20 +102,10 @@ Main tables:
 - `users`
 - `ingestion_events`
 
-`papers` stores metadata:
-
-- source type/id, e.g. `arxiv`, `1706.03762`
-- title
-- authors as newline-separated text
-- abstract
-- categories as comma-separated text
-- canonical URL
-- PDF URL
-- metadata status/error/retry fields
+`papers` stores arXiv metadata and retry state.
 
 `paper_citations` stores preferred BibTeX:
 
-- paper ID
 - BibTeX text
 - provider
 - source URL
@@ -138,44 +121,35 @@ Main tables:
 - permalink when known
 - posted timestamp
 
-`ingestion_events` makes Slack/demo/backfill ingestion idempotent.
+`ingestion_events` makes Slack/backfill ingestion idempotent.
 
-Current schema is created via `Base.metadata.create_all`. There are no Alembic migrations yet. That is acceptable for the current prototype but should change before a persistent deployment.
+There are no Alembic migrations yet. Add migrations before using persistent production data.
 
 ## arXiv Handling
 
-MVP supports direct arXiv URLs:
+Supported URLs:
 
 - `https://arxiv.org/abs/<id>`
 - `https://arxiv.org/pdf/<id>.pdf`
 
-Version suffixes are normalized:
+Normalization:
 
-- `2401.12345v2` becomes `2401.12345`
-- old IDs like `hep-th/9901001v3` become `hep-th/9901001`
+- `2401.12345v2` becomes `2401.12345`.
+- `hep-th/9901001v3` becomes `hep-th/9901001`.
 
 Metadata source:
 
-- arXiv Atom API: `https://export.arxiv.org/api/query?id_list=<id>`
+```text
+https://export.arxiv.org/api/query?id_list=<id>
+```
 
-Citation source:
+BibTeX behavior mirrors arXiv’s export button:
 
-arXiv’s own page uses `static/browse/.../js/cite.js`. The behavior discovered from that file:
+- If the arXiv page exposes `citation_doi`, ask Crossref with `Accept: application/x-bibtex`.
+- Otherwise call `https://arxiv.org/bibtex/<arxiv-id>`.
+- Fall back to locally generated BibTeX if fetch fails.
 
-- If the arXiv HTML page has `citation_doi`, arXiv’s button asks Crossref via `https://dx.doi.org/<doi>` with `Accept: application/x-bibtex`.
-- Otherwise the button calls `https://arxiv.org/bibtex/<arxiv-id>`.
-
-The app mirrors that in `app/services/citations.py`:
-
-- Try arXiv-page DOI + Crossref when available.
-- Otherwise use arXiv `/bibtex/{id}`.
-- Store result in `paper_citations`.
-- Fall back to locally generated BibTeX if citation fetching fails.
-
-arXiv API pacing:
-
-- `ARXIV_REQUEST_DELAY_SECONDS=3` default.
-- This exists to respect arXiv public API rate guidance.
+The worker uses `ARXIV_REQUEST_DELAY_SECONDS=3`.
 
 ## Search Behavior
 
@@ -183,103 +157,67 @@ Search supports:
 
 - free text
 - channel
-- user/sharer
-- category
+- sharer text
 - from/to date
-- sort: recent or most shared
+- recent or most-shared sort
 
-Postgres uses full-text search through `to_tsvector`/`plainto_tsquery`. SQLite uses `ILIKE`-style fallback for local testing.
+Postgres uses full-text search through `to_tsvector` and `plainto_tsquery`. SQLite uses `ILIKE`-style fallback.
 
 Live search:
 
-- Page initially renders full search page.
 - `app/static/search.js` listens to inputs/selects.
 - After 350ms of no typing, it fetches `/search/results`.
-- Only `#results-list` and `#result-count` update.
-- Browser URL updates via `history.replaceState`, but focus stays in the input.
+- It updates `#results-list` and `#result-count`.
+- It updates the browser URL with `history.replaceState`.
+- Input focus stays put.
 
-## Demo Simulator
-
-Route:
-
-- `GET /demo/slack`
-- `POST /demo/slack`
-
-Fake channels/users live in `app/demo_config.py`.
-
-Simulator behavior:
-
-1. User chooses fake channel and fake sender.
-2. User types a message containing an arXiv link.
-3. App builds a `SlackMessage`.
-4. App calls the same `ingest_slack_message` function used for real Slack/backfill.
-5. App applies demo fixtures for known IDs if available.
-6. App tries one metadata refresh for new pending arXiv links.
-
-This makes the local demo show the core workflow without needing Slack approval.
-
-Known fixture papers in `app/demo_data.py`:
-
-- `1706.03762`
-- `2309.08600`
-- `2406.09246`
-
-These are not shown in the UI anymore. They are only used to make those demo links fill immediately/offline.
-
-## Slack Integration Status
-
-It is mostly wired, but real Slack still needs setup and a little polish.
+## Slack Integration
 
 Implemented:
 
-- `/slack/events` endpoint.
+- `/slack/events`.
 - Slack signing secret verification.
-- URL verification response.
-- Message event handling.
-- Ignores DMs via channel type filter.
-- Ignores deleted messages and bot messages.
-- Supports channel/group events in principle.
-- Backfill script using Slack Web API.
-- Worker scheduled catch-up for channels already known.
+- URL verification.
+- `message.channels` and `message.groups`.
+- DM filtering via channel type.
+- Deleted-message and bot-message ignore rules.
+- Slack Web API enrichment for channel names, user names, and permalinks.
+- Backfill by one channel.
+- Backfill all joined channels.
+- Worker catch-up for channels already known to the DB.
 
 Required env vars:
 
 - `SLACK_SIGNING_SECRET`
 - `SLACK_BOT_TOKEN`
 
-Slack app setup needed:
+Slack bot scopes:
 
-- Install Slack app in workspace.
-- Set Events Request URL to public HTTPS endpoint ending in `/slack/events`.
-- Subscribe to message events:
-  - `message.channels`
-  - `message.groups`
-- Scopes likely needed:
-  - `channels:history`
-  - `channels:read`
-  - `groups:history`
-  - `groups:read`
-  - `users:read`
-- Bot must be invited to private channels.
-- For public channels, invitation should be treated as opt-in.
+- `channels:history`
+- `channels:read`
+- `groups:history`
+- `groups:read`
+- `users:read`
 
-Important caveat:
+After scope changes, reinstall the Slack app.
 
-Live Slack Events may only provide user IDs and channel IDs, not pretty names. Backfill gets channel info, but user display-name enrichment is currently shallow. A good next step before a real Slack demo is to enrich users/channels via Slack API so the UI does not show raw IDs.
+Operational pattern:
 
-Another caveat:
-
-The Events API handler does not currently fetch permalinks for live events. Backfill does. Add `chat.getPermalink` in live path if Slack links on detail pages matter for real Slack demos.
-
-## Deployment Notes
-
-Local direct server:
+1. Invite bot to channels.
+2. Post new links and let Events API ingest them.
+3. After reset or first setup, run:
 
 ```bash
-uvicorn app.main:app --reload
+docker compose exec api python scripts/backfill_joined_channels.py --limit 200
 ```
 
-Direct local mode uses SQLite by default unless `DATABASE_URL` is set.
+Use date bounds for larger workspaces:
+
+```bash
+docker compose exec api python scripts/backfill_joined_channels.py --since 2026-05-01 --until 2026-05-22 --limit 1000
+```
+
+## Deployment Notes
 
 Docker:
 
@@ -287,33 +225,41 @@ Docker:
 docker compose up --build
 ```
 
-Docker runs Postgres and the worker. This is closer to the intended deployment.
+For local Slack testing, run ngrok:
 
-Docker is not installed in the current local environment where Codex has been working, so Compose has not been fully run here.
+```bash
+ngrok http 8000
+```
 
-For Slack Events local testing, a public HTTPS tunnel is needed, e.g. ngrok/cloudflared, pointing to local port 8000.
+Use:
 
-## Auth and Privacy
+```text
+https://your-ngrok-url/slack/events
+```
 
-MVP auth is a shared lab password:
+Docker persists Postgres data in the `postgres_data` volume. These commands clear data:
+
+```bash
+docker compose exec api python scripts/reset_archive.py
+docker compose down -v
+```
+
+## Auth And Privacy
+
+MVP auth uses:
 
 - `SHARED_PASSWORD`
 - signed cookie via `APP_SECRET_KEY`
 
-This is intentionally low-friction for a demo. It is not enough for real production if private-channel metadata is included.
+The app stores paper metadata and Slack metadata. It does not store full Slack message excerpts.
 
-Privacy choices:
-
-- Store paper metadata.
-- Store channel/user/timestamp/permalink metadata.
-- Do not store full Slack message excerpts.
-
-Future real deployment should consider:
+Real deployment should add:
 
 - lab allowlist login
-- OAuth or institutional SSO
+- OAuth or SSO
 - per-channel visibility rules
-- deletion/removal handling
+- backups
+- migrations
 
 ## Tests
 
@@ -325,68 +271,46 @@ pytest
 
 Current tests cover:
 
-- arXiv URL normalization
-- arXiv Atom parsing
-- Slack link parsing
-- ingestion dedupe
-- search filters
-- blank date handling
-- live search partial endpoint
-- demo Slack path
-- demo fixtures storing arXiv-style BibTeX
-- `.bib` route
+- arXiv URL normalization.
+- arXiv Atom parsing.
+- Slack event parsing.
+- Slack enrichment.
+- ingestion dedupe.
+- search filters.
+- blank date handling.
+- live search partial endpoint.
+- stored BibTeX preference.
+- `.bib` route.
+- joined-channel backfill helper.
 
 Known warnings:
 
 - FastAPI `on_event` deprecation.
-- Starlette template calling convention deprecation.
 - TestClient per-request cookie warning.
-
-These are not behavior blockers but are good cleanup tasks.
 
 ## Likely Next Tasks
 
-Highest value before showing someone:
+Good next steps:
 
-1. Real Slack polish:
-   - Fetch user display names.
-   - Fetch channel names for live events.
-   - Fetch permalinks for live events.
-   - Confirm Events API payload shape in a real workspace.
-
-2. Demo flow polish:
-   - After posting in `/demo/slack`, redirect to search or show a small success state.
-   - Maybe add a button from simulator to “View archive.”
-
-3. Metadata reliability:
-   - Make citation fetch failure visible but non-blocking.
-   - Add a status count for pending metadata only; failed metadata was removed from UI by user request.
-
-4. Database lifecycle:
-   - Add Alembic before persistent production data.
-
-5. Search quality:
-   - Better ranking later.
-   - Semantic search later with pgvector, but not MVP.
-
-6. New sources:
-   - OpenReview.
-   - DOI links.
-   - ACL Anthology.
-   - Semantic Scholar.
+- Improve status page wording as the product settles.
+- Add Alembic migrations.
+- Add database backups before any real deployment.
+- Add OpenReview/DOI/ACL sources.
+- Add semantic search later with pgvector.
 
 ## User Preferences Captured
 
-- Wants MVP archive only.
+- Wants archive-only MVP.
 - Wants web app-first.
+- Wants real Slack test workspace for demo.
+- No fake Slack simulator.
 - No Slack clutter or bot replies.
-- No “LLM slop” yet.
-- No feed/social product vibes.
-- Search should feel fluid and not steal focus.
-- Static seeded sample papers should not appear by default.
-- Demo simulator should be minimal.
-- BibTeX should appear in a modal, not a raw text page.
-- Status page should be simple and not overly technical.
-- `Mentions` label felt unclear; changed to `Papers w/ dupes`.
+- No LLM features yet.
+- No feed/social product feel.
+- Search should feel fluid and keep focus.
+- Static sample papers should not appear.
+- BibTeX should appear in a modal.
+- Status page should stay simple.
+- `Mentions` label changed to `Papers w/ dupes`.
 - Failed metadata was removed from the status page.
 

@@ -13,7 +13,7 @@ def main() -> None:
         for model in [PaperCitation, SlackMention, IngestionEvent, Paper, SlackChannel, SlackUser]:
             db.query(model).delete()
         db.commit()
-    print("Cleared demo archive data.")
+    print("Cleared archive data.")
 
 
 if __name__ == "__main__":

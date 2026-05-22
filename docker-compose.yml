@@ -22,7 +22,6 @@ services:
       DATABASE_URL: postgresql+psycopg://paper_archive:paper_archive@db:5432/paper_archive
       APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-change-me}
       SHARED_PASSWORD: ${SHARED_PASSWORD:-papers}
-      DEMO_MODE: ${DEMO_MODE:-true}
       SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
       ARXIV_REQUEST_DELAY_SECONDS: ${ARXIV_REQUEST_DELAY_SECONDS:-3}
@@ -41,7 +40,6 @@ services:
       DATABASE_URL: postgresql+psycopg://paper_archive:paper_archive@db:5432/paper_archive
       APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-change-me}
       SHARED_PASSWORD: ${SHARED_PASSWORD:-papers}
-      DEMO_MODE: ${DEMO_MODE:-true}
       SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
       WORKER_INTERVAL_SECONDS: ${WORKER_INTERVAL_SECONDS:-30}

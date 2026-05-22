@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date
 from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -11,12 +11,8 @@ from sqlalchemy.orm import Session
 from app.auth import COOKIE_NAME, auth_token, is_authenticated
 from app.config import get_settings
 from app.database import get_db, init_db
-from app.demo_config import DEMO_CHANNELS, DEMO_USERS, demo_channel_by_id, demo_user_by_id
-from app.demo_data import apply_demo_fixtures
 from app.models import Paper, SlackChannel, SlackMention, SlackUser
-from app.services.ingestion import SlackMessage, ingest_slack_message
 from app.services.citations import preferred_bibtex
-from app.services.metadata import refresh_pending_metadata
 from app.services.search import search_papers
 from app.services.slack import (
     SlackApiClient,
@@ -124,57 +120,6 @@ def search_results(
     )
     html = templates.get_template("_results.html").render(context)
     return JSONResponse({"count": len(context["results"]), "html": html})
-
-
-@app.get("/demo/slack", response_class=HTMLResponse)
-def demo_slack_page(request: Request, db: Session = Depends(get_db)):
-    if not is_authenticated(request):
-        return RedirectResponse("/login", status_code=303)
-    return templates.TemplateResponse(
-        request,
-        "demo_slack.html",
-        {
-            "channels": DEMO_CHANNELS,
-            "users": DEMO_USERS,
-            "recent_mentions": db.scalars(
-                select(SlackMention).order_by(SlackMention.created_at.desc()).limit(8)
-            ).all(),
-        },
-    )
-
-
-@app.post("/demo/slack")
-async def demo_slack_post(request: Request, db: Session = Depends(get_db)):
-    if not is_authenticated(request):
-        return RedirectResponse("/login", status_code=303)
-    if not get_settings().demo_mode:
-        raise HTTPException(status_code=404, detail="Demo Slack is disabled")
-
-    form = parse_qs((await request.body()).decode())
-    channel_id = form.get("channel_id", ["CROBOT"])[0]
-    user_id = form.get("user_id", ["UADA"])[0]
-    text = form.get("text", [""])[0].strip()
-    if text:
-        channel = demo_channel_by_id(channel_id)
-        user = demo_user_by_id(user_id)
-        ts = f"{datetime.now(timezone.utc).timestamp():.6f}"
-        message = SlackMessage(
-            team_id="TDEMO",
-            channel_id=channel["id"],
-            channel_name=channel["name"],
-            channel_is_private=channel["is_private"],
-            user_id=user["id"],
-            user_name=user["name"],
-            message_ts=ts,
-            thread_ts=None,
-            text=text,
-            permalink=f"https://slack.example.com/archives/{channel['id']}/p{ts.replace('.', '')}",
-        )
-        ingest_slack_message(db, message, event_key=f"demo-live:{channel['id']}:{ts}", commit=False)
-        apply_demo_fixtures(db)
-        db.commit()
-        await refresh_pending_metadata(db, limit=1)
-    return RedirectResponse("/demo/slack", status_code=303)
 
 
 @app.get("/papers/{paper_id}.bib")

@@ -10,7 +10,6 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./paper_archive.db"
     app_secret_key: str = Field(default="dev-secret", min_length=1)
     shared_password: str = Field(default="papers", min_length=1)
-    demo_mode: bool = True
 
     slack_signing_secret: str | None = None
     slack_bot_token: str | None = None
