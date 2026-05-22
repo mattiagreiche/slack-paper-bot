@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}{{ paper.title or paper.source_id }}{% endblock %}
+{% block content %}
+<section class="detail-header">
+  <a class="back-link" href="/">&larr; Search</a>
+  <p class="eyebrow">{{ paper.source_type }}:{{ paper.source_id }}</p>
+  <h1>{{ paper.title or "Metadata pending" }}</h1>
+  <p class="authors large">{{ (paper.authors or "Authors pending") | replace("\n", ", ") }}</p>
+  <div class="action-row">
+    {% if paper.canonical_url %}<a class="button secondary" href="{{ paper.canonical_url }}">Open paper</a>{% endif %}
+    {% if paper.pdf_url %}<a class="button secondary" href="{{ paper.pdf_url }}">PDF</a>{% endif %}
+    <button class="button" type="button" data-open-bibtex>BibTeX</button>
+  </div>
+</section>
+
+<section class="detail-grid">
+  <article class="detail-section">
+    <h2>Abstract</h2>
+    <p>{{ paper.abstract or "The metadata worker has not filled in the abstract yet." }}</p>
+    {% if paper.categories %}
+    <div class="tags spacious">
+      {% for category in paper.categories.split(",") %}
+      <span>{{ category }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </article>
+
+  <aside class="side-panel">
+    <h2>{{ mention_count }} {{ "share" if mention_count == 1 else "shares" }}</h2>
+    <ol class="mention-list">
+      {% for mention in mentions %}
+      <li>
+        <strong>{{ mention.user_name or mention.user_id or "Unknown user" }}</strong>
+        <span>#{{ mention.channel_name }}</span>
+        {% if mention.posted_at %}<time>{{ mention.posted_at.date() }}</time>{% endif %}
+        {% if mention.slack_permalink %}<a href="{{ mention.slack_permalink }}">Slack message</a>{% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+  </aside>
+</section>
+
+<div class="modal-backdrop" data-bibtex-modal hidden>
+  <section class="bibtex-modal" role="dialog" aria-modal="true" aria-labelledby="bibtex-title">
+    <div class="modal-title-row">
+      <h2 id="bibtex-title">BibTeX</h2>
+      <button class="modal-close" type="button" data-close-bibtex aria-label="Close BibTeX dialog">&times;</button>
+    </div>
+    {% if paper.citation %}
+    <p class="source-note">Data provided by: <a href="{{ paper.citation.source_url }}">{{ paper.citation.provider }}</a></p>
+    {% else %}
+    <p class="source-note">Generated locally from stored metadata.</p>
+    {% endif %}
+    <textarea class="bibtex-textarea" readonly rows="12">{{ bibtex }}</textarea>
+  </section>
+</div>
+<script src="/static/detail.js"></script>
+{% endblock %}

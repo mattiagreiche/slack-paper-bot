@@ -1,0 +1,21 @@
+{% for result in results %}
+<article class="paper-row">
+  <div class="paper-main">
+    <a class="paper-title" href="/papers/{{ result.paper.id }}">{{ result.paper.title or "Metadata pending for arXiv:" ~ result.paper.source_id }}</a>
+    <p class="authors">{{ (result.paper.authors or "Authors pending") | replace("\n", ", ") }}</p>
+    <p class="abstract">{{ result.paper.abstract or "Metadata has been queued. The worker will fill in title, authors, abstract, and categories." }}</p>
+  </div>
+  <aside class="paper-meta">
+    <strong>{{ result.mention_count }}</strong>
+    <span>{{ "share" if result.mention_count == 1 else "shares" }}</span>
+    {% if result.latest_mention_at %}
+    <time>{{ result.latest_mention_at.date() }}</time>
+    {% endif %}
+  </aside>
+</article>
+{% else %}
+<section class="empty-state">
+  <h2>No papers yet.</h2>
+  <p>Seed the demo data or invite the Slack app to a channel, then search again.</p>
+</section>
+{% endfor %}

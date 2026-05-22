@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Paper Archive{% endblock %}</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/">
+        <span>CDL Slack Paper Tracker</span>
+      </a>
+      <nav class="nav">
+        <a href="/">Search</a>
+        <a href="/demo/slack">Demo Slack</a>
+        <a href="/status">Status</a>
+        <form action="/logout" method="post">
+          <button class="link-button" type="submit">Log out</button>
+        </form>
+      </nav>
+    </header>
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

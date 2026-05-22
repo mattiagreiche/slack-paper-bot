@@ -1,0 +1,57 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: paper_archive
+      POSTGRES_USER: paper_archive
+      POSTGRES_PASSWORD: paper_archive
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paper_archive -d paper_archive"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  api:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      DATABASE_URL: postgresql+psycopg://paper_archive:paper_archive@db:5432/paper_archive
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-change-me}
+      SHARED_PASSWORD: ${SHARED_PASSWORD:-papers}
+      DEMO_MODE: ${DEMO_MODE:-true}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      ARXIV_REQUEST_DELAY_SECONDS: ${ARXIV_REQUEST_DELAY_SECONDS:-3}
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: python -m app.worker
+    environment:
+      DATABASE_URL: postgresql+psycopg://paper_archive:paper_archive@db:5432/paper_archive
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-change-me}
+      SHARED_PASSWORD: ${SHARED_PASSWORD:-papers}
+      DEMO_MODE: ${DEMO_MODE:-true}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      WORKER_INTERVAL_SECONDS: ${WORKER_INTERVAL_SECONDS:-30}
+      BACKFILL_LIMIT_PER_CHANNEL: ${BACKFILL_LIMIT_PER_CHANNEL:-200}
+      ARXIV_REQUEST_DELAY_SECONDS: ${ARXIV_REQUEST_DELAY_SECONDS:-3}
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

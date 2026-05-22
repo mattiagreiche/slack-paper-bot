@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Search Papers{% endblock %}
+{% block content %}
+<section class="search-hero">
+  <div>
+    <!-- <p class="eyebrow">Slack-sourced paper memory</p> -->
+    <h1>Find any arXiv paper shared on Slack</h1>
+  </div>
+  <div class="stat-strip">
+    <span id="result-count">{{ results|length }}</span>
+    <small>matching papers</small>
+  </div>
+</section>
+
+<form class="search-form" method="get" action="/" data-live-search>
+  <div class="query-row">
+    <label class="sr-only" for="q">Search papers</label>
+    <input id="q" name="q" value="{{ q }}" placeholder="Search title, author, abstract, or arXiv ID">
+    <button type="submit">Search</button>
+  </div>
+  <div class="filters">
+    <label>
+      Channel
+      <select name="channel">
+        <option value="">All channels</option>
+        {% for channel in channels %}
+        <option value="{{ channel.id }}" {% if selected_channel == channel.id %}selected{% endif %}>#{{ channel.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Sharer
+      <input type="search" name="user" value="{{ user }}" placeholder="Type a name">
+    </label>
+    <label>
+      From
+      <input type="date" name="date_from" value="{{ date_from }}">
+    </label>
+    <label>
+      To
+      <input type="date" name="date_to" value="{{ date_to }}">
+    </label>
+    <label>
+      Sort
+      <select name="sort">
+        <option value="recent" {% if sort == "recent" %}selected{% endif %}>Recent</option>
+        <option value="mentions" {% if sort == "mentions" %}selected{% endif %}>Most shared</option>
+      </select>
+    </label>
+  </div>
+</form>
+
+<section class="results-list" id="results-list">
+  {% include "_results.html" %}
+</section>
+<script src="/static/search.js"></script>
+{% endblock %}

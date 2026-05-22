@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Archive Status{% endblock %}
+{% block content %}
+<section class="status-header">
+  <p class="eyebrow">Operator view</p>
+  <h1>Ingestion status</h1>
+</section>
+
+<section class="metric-grid">
+  <div><strong>{{ counts.papers }}</strong><span>Papers</span></div>
+  <div><strong>{{ counts.mentions }}</strong><span>Papers w/ dupes</span></div>
+  <div><strong>{{ counts.channels }}</strong><span>Channels</span></div>
+  <div><strong>{{ counts.pending_metadata }}</strong><span>Pending metadata</span></div>
+</section>
+
+<section class="table-section">
+  <h2>Channels</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Visibility</th>
+        <th>Last backfill</th>
+        <th>Last catch-up</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for channel in channels %}
+      <tr>
+        <td>#{{ channel.name }}</td>
+        <td>{{ "Private" if channel.is_private else "Public" }}</td>
+        <td>{% if channel.last_backfilled_ts %}{{ channel.last_backfilled_ts }}{% else %}&mdash;{% endif %}</td>
+        <td>{% if channel.last_catchup_ts %}{{ channel.last_catchup_ts }}{% else %}&mdash;{% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4">No channels recorded yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
