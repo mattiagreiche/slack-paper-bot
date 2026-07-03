@@ -34,7 +34,7 @@
         <strong>{{ mention.user_name or mention.user_id or "Unknown user" }}</strong>
         <span>#{{ mention.channel_name }}</span>
         {% if mention.posted_at %}<time>{{ mention.posted_at.date() }}</time>{% endif %}
-        {% if mention.slack_permalink %}<a href="{{ mention.slack_permalink }}">Slack message</a>{% endif %}
+        {% if mention.slack_permalink %}<a href="{{ mention.slack_permalink }}" target="_blank" rel="noopener noreferrer">Slack message</a>{% endif %}
       </li>
       {% endfor %}
     </ol>
