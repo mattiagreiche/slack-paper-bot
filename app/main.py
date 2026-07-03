@@ -181,6 +181,14 @@ def status_page(request: Request, db: Session = Depends(get_db)):
             select(func.count(Paper.id)).where(Paper.metadata_status == "pending")
         )
         or 0,
+        "zotero_synced": db.scalar(
+            select(func.count(ZoteroItemSync.paper_id)).where(ZoteroItemSync.sync_status == "synced")
+        )
+        or 0,
+        "zotero_failed": db.scalar(
+            select(func.count(ZoteroItemSync.paper_id)).where(ZoteroItemSync.sync_status == "failed")
+        )
+        or 0,
     }
     channels = db.scalars(select(SlackChannel).order_by(SlackChannel.name)).all()
     return templates.TemplateResponse(
