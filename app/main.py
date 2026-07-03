@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 from app.auth import COOKIE_NAME, auth_token, is_authenticated
 from app.config import get_settings
 from app.database import get_db, init_db
-from app.models import Paper, SlackChannel, SlackMention, SlackUser
+from app.models import Paper, SlackChannel, SlackMention, SlackUser, ZoteroItemSync
+from app.services.ingestion import ingest_slack_message
 from app.services.citations import preferred_bibtex
 from app.services.search import search_papers
 from app.services.slack import (

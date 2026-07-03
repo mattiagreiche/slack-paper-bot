@@ -1,8 +1,13 @@
 from datetime import datetime, timezone
+import hashlib
+import hmac
+import json
+import time
 
 from fastapi.testclient import TestClient
 
 from app.auth import auth_token
+from app.config import get_settings
 from app.database import get_db
 from app.extractors.base import PaperMetadata
 from app.main import app
@@ -109,3 +114,69 @@ def test_bibtex_endpoint_prefers_stored_citation(db_session):
     response = client.get(f"/papers/{paper.id}.bib", cookies=_auth_cookie())
     assert response.status_code == 200
     assert "vaswani2023attentionneed" in response.text
+
+
+def test_paper_detail_opens_slack_permalink_in_new_tab(db_session):
+    ingest_slack_message(
+        db_session,
+        SlackMessage(
+            team_id="T1",
+            channel_id="C1",
+            channel_name="reading",
+            channel_is_private=False,
+            user_id="U1",
+            user_name="Ada",
+            message_ts="1716216600.000100",
+            thread_ts=None,
+            text="https://arxiv.org/abs/1706.03762",
+            permalink="https://slack.example/archives/C1/p1716216600000100",
+        ),
+    )
+    paper = db_session.query(Paper).one()
+
+    client = _client(db_session)
+    response = client.get(f"/papers/{paper.id}", cookies=_auth_cookie())
+
+    assert response.status_code == 200
+    assert 'target="_blank"' in response.text
+    assert 'rel="noopener noreferrer"' in response.text
+
+
+def test_slack_events_endpoint_ingests_message(db_session, monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "slack_signing_secret", "signing-secret")
+    monkeypatch.setattr(settings, "slack_bot_token", None)
+    payload = {
+        "type": "event_callback",
+        "team_id": "T1",
+        "event_id": "Ev1",
+        "event": {
+            "type": "message",
+            "channel_type": "channel",
+            "channel": "C1",
+            "user": "U1",
+            "ts": "1716216600.000100",
+            "text": "https://arxiv.org/abs/1706.03762",
+        },
+    }
+    body = json.dumps(payload).encode()
+    timestamp = str(int(time.time()))
+    signature = "v0=" + hmac.new(
+        b"signing-secret",
+        b"v0:" + timestamp.encode() + b":" + body,
+        hashlib.sha256,
+    ).hexdigest()
+
+    client = _client(db_session)
+    response = client.post(
+        "/slack/events",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Slack-Request-Timestamp": timestamp,
+            "X-Slack-Signature": signature,
+        },
+    )
+
+    assert response.status_code == 200
+    assert db_session.query(Paper).filter(Paper.source_id == "1706.03762").count() == 1
