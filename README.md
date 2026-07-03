@@ -1,12 +1,13 @@
 # Slack Paper Archive
 
-A small FastAPI app that saves paper links shared in Slack. It starts with arXiv links, stores one canonical paper record, and records each Slack share as a separate mention.
+A small FastAPI app that saves scholarly links shared in opted-in public Slack channels and syncs them into a Zotero group library. It supports arXiv, DOI resolver, and Semantic Scholar paper links, stores one canonical paper record, and records each Slack share as provenance for the Zotero item.
 
 The current MVP gives you:
 
-- Slack Events ingestion for new channel messages.
+- Slack Events ingestion for new public channel messages.
 - Backfill for channels the bot has joined.
-- arXiv metadata and arXiv/Crossref-style BibTeX.
+- arXiv, DOI/Crossref, and Semantic Scholar metadata.
+- Zotero group item sync, channel-based collections, and bot-owned provenance notes.
 - Search by paper text, channel, sharer name, date, and share count.
 - Shared-password access.
 
@@ -25,6 +26,8 @@ APP_SECRET_KEY=replace-with-a-random-secret
 SHARED_PASSWORD=papers
 SLACK_SIGNING_SECRET=
 SLACK_BOT_TOKEN=
+ZOTERO_API_KEY=
+ZOTERO_GROUP_ID=
 ```
 
 Generate a secret if you want one:
@@ -73,7 +76,6 @@ Subscribe to bot events:
 
 ```text
 message.channels
-message.groups
 ```
 
 In **OAuth & Permissions**, add bot token scopes:
@@ -81,8 +83,6 @@ In **OAuth & Permissions**, add bot token scopes:
 ```text
 channels:history
 channels:read
-groups:history
-groups:read
 users:read
 ```
 
@@ -108,7 +108,27 @@ Invite the bot to a channel:
 /invite @your-bot-name
 ```
 
-Post an arXiv link. New events should appear in the archive.
+Post an arXiv, DOI resolver, or Semantic Scholar paper link. New events should appear in the archive.
+
+The trial intentionally ignores private channels. Public channels are opt-in by inviting the bot.
+
+## Zotero Setup
+
+Create or choose a Zotero group library, then create a Zotero API key with write access to that group. Put these in `.env`:
+
+```bash
+ZOTERO_API_KEY=...
+ZOTERO_GROUP_ID=...
+```
+
+`ZOTERO_GROUP_ID` is the numeric ID in the Zotero group library URL. Restart Docker after changing these values:
+
+```bash
+docker compose down
+docker compose up --build
+```
+
+Once a paper has metadata, the worker creates a Zotero item in the group library, lazily creates a collection for the Slack channel, and writes one child note titled `Bot notes` with the Slack share history.
 
 ## Public Tunnel For Slack Testing
 
@@ -136,7 +156,7 @@ You do not need to restart ngrok when you restart Docker, as long as it still po
 
 After a database reset, Slack will not resend old events. Run a backfill to read channel history.
 
-Backfill every public/private channel the bot has joined:
+Backfill every public channel the bot has joined:
 
 ```bash
 docker compose exec api python scripts/backfill_joined_channels.py --limit 200
@@ -159,15 +179,39 @@ docker compose exec api python scripts/backfill_channel.py C0123456789 --since 2
 
 The worker catches up channels already known to the database. A blank database has no channel list, so run joined-channel backfill once after resets.
 
-## arXiv And BibTeX
+## Supported Link Sources
 
-The app fetches metadata from:
+Supported direct links:
+
+- `https://arxiv.org/abs/<id>`
+- `https://arxiv.org/pdf/<id>.pdf`
+- `https://doi.org/<doi>`
+- `https://dx.doi.org/<doi>`
+- `https://www.semanticscholar.org/paper/.../<paper-id>`
+
+The first trial still does not ingest arbitrary news/web pages. Publisher and journal pages need a later metadata-resolution layer unless the Slack message includes a DOI resolver link directly.
+
+## Metadata And BibTeX
+
+The app fetches arXiv metadata from:
 
 ```text
 https://export.arxiv.org/api/query?id_list=<arxiv-id>
 ```
 
-It does not download PDFs.
+DOI metadata comes from Crossref:
+
+```text
+https://api.crossref.org/works/<doi>
+```
+
+Semantic Scholar paper metadata comes from:
+
+```text
+https://api.semanticscholar.org/graph/v1/paper/<paper-id>
+```
+
+The app does not download PDFs.
 
 For BibTeX, the app mirrors arXiv’s export button:
 
@@ -204,6 +248,8 @@ Docker uses Postgres and matches the intended deployment shape.
 - `app/services/citations.py`: arXiv/Crossref BibTeX fetch.
 - `app/services/search.py`: keyword and filter search.
 - `app/extractors/arxiv.py`: arXiv URL normalization and Atom parsing.
+- `app/extractors/doi.py`: DOI resolver normalization and Crossref parsing.
+- `app/extractors/semantic_scholar.py`: Semantic Scholar paper URL normalization and Graph API parsing.
 - `scripts/reset_archive.py`: clears stored data.
 - `scripts/backfill_joined_channels.py`: backfills joined Slack channels.
 - `scripts/backfill_channel.py`: backfills one Slack channel.
@@ -215,4 +261,4 @@ Docker uses Postgres and matches the intended deployment shape.
 pytest
 ```
 
-The tests cover arXiv normalization, Slack event parsing, dedupe, search filters, BibTeX, and backfill helpers.
+The tests cover arXiv/DOI/Semantic Scholar normalization, Slack event parsing, dedupe, search filters, BibTeX, Zotero sync, and backfill helpers.
