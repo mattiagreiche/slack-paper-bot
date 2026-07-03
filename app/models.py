@@ -112,6 +112,31 @@ class SlackMention(Base):
     paper: Mapped[Paper] = relationship(back_populates="mentions")
 
 
+class ZoteroCollectionSync(Base):
+    __tablename__ = "zotero_collection_syncs"
+
+    channel_id: Mapped[str] = mapped_column(ForeignKey("channels.id"), primary_key=True)
+    zotero_collection_key: Mapped[str | None] = mapped_column(String(32))
+    sync_status: Mapped[str] = mapped_column(String(24), default="pending", nullable=False)
+    sync_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ZoteroItemSync(Base):
+    __tablename__ = "zotero_item_syncs"
+
+    paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id"), primary_key=True)
+    zotero_item_key: Mapped[str | None] = mapped_column(String(32))
+    zotero_note_key: Mapped[str | None] = mapped_column(String(32))
+    sync_status: Mapped[str] = mapped_column(String(24), default="pending", nullable=False)
+    sync_error: Mapped[str | None] = mapped_column(Text)
+    sync_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_sync_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class IngestionEvent(Base):
     __tablename__ = "ingestion_events"
 
