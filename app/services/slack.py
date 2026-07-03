@@ -41,7 +41,7 @@ def verify_slack_signature(
 def slack_message_from_event(event: dict, team_id: str | None) -> SlackMessage | None:
     if event.get("type") != "message":
         return None
-    if event.get("channel_type") not in {"channel", "group"}:
+    if event.get("channel_type") != "channel":
         return None
     if event.get("subtype") in {"message_deleted", "bot_message"}:
         return None
@@ -56,12 +56,11 @@ def slack_message_from_event(event: dict, team_id: str | None) -> SlackMessage |
     if not channel_id or not message_ts:
         return None
 
-    channel_type = event.get("channel_type")
     return SlackMessage(
         team_id=team_id,
         channel_id=channel_id,
         channel_name=event.get("channel_name") or channel_id,
-        channel_is_private=channel_type == "group",
+        channel_is_private=False,
         user_id=payload.get("user") or event.get("user"),
         user_name=None,
         message_ts=message_ts,
@@ -97,7 +96,7 @@ class SlackApiClient:
     async def conversations(
         self,
         *,
-        types: str = "public_channel,private_channel",
+        types: str = "public_channel",
         limit: int = 200,
     ) -> list[dict]:
         channels: list[dict] = []
@@ -197,6 +196,9 @@ async def backfill_channel(
     limit: int,
 ) -> int:
     channel = await client.conversation_info(channel_id)
+    if channel.get("is_private"):
+        return 0
+
     messages = await client.history(channel_id, oldest=oldest, latest=latest, limit=limit)
     count = 0
     latest_ts = oldest
@@ -261,5 +263,5 @@ async def backfill_channel(
 
 
 async def joined_channels(client: SlackApiClient) -> list[dict]:
-    channels = await client.conversations(types="public_channel,private_channel")
+    channels = await client.conversations(types="public_channel")
     return [channel for channel in channels if channel.get("is_member")]

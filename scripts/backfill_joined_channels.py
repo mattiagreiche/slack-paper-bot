@@ -44,7 +44,7 @@ async def run(limit: int, oldest: str | None, latest: str | None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Backfill all public/private channels the bot has joined."
+        description="Backfill all public channels the bot has joined."
     )
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--oldest", default=None, help="Slack timestamp lower bound.")
