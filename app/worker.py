@@ -5,6 +5,7 @@ from app.database import SessionLocal, init_db
 from app.models import SlackChannel
 from app.services.metadata import refresh_pending_metadata_sync
 from app.services.slack import SlackApiClient, backfill_channel
+from app.services.zotero import sync_ready_papers_to_zotero_sync
 
 
 def main() -> None:
@@ -14,6 +15,8 @@ def main() -> None:
         with SessionLocal() as db:
             refreshed = refresh_pending_metadata_sync(db)
             print(f"metadata refreshed={refreshed}", flush=True)
+            zotero_synced = sync_ready_papers_to_zotero_sync(db)
+            print(f"zotero synced={zotero_synced}", flush=True)
             if settings.slack_bot_token:
                 client = SlackApiClient(settings.slack_bot_token)
                 for channel in db.query(SlackChannel).all():
@@ -24,7 +27,7 @@ def main() -> None:
                         if "missing_scope" in str(exc):
                             print(
                                 "catchup skipped: Slack token is missing channel read scopes "
-                                "(add channels:read/groups:read and reinstall the app)",
+                                "(add channels:read and reinstall the app)",
                                 flush=True,
                             )
                             continue
