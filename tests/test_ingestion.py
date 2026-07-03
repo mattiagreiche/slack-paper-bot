@@ -48,9 +48,43 @@ def test_ingestion_dedupes_same_paper_across_mentions(db_session):
     assert len(mentions) == 2
 
 
-def test_same_message_does_not_duplicate_when_url_variant_changes(db_session):
-    first = SlackMessage(
+def test_ingestion_accepts_doi_and_semantic_scholar_links(db_session):
+    doi_message = SlackMessage(
         team_id="T1",
+        channel_id="C1",
+        channel_name="reading",
+        channel_is_private=False,
+        user_id="U1",
+        user_name="Ada",
+        message_ts="1716216600.000100",
+        thread_ts=None,
+        text="https://doi.org/10.1145/3366423.3380138",
+    )
+    semantic_scholar_message = SlackMessage(
+        team_id="T1",
+        channel_id="C1",
+        channel_name="reading",
+        channel_is_private=False,
+        user_id="U1",
+        user_name="Ada",
+        message_ts="1716217600.000200",
+        thread_ts=None,
+        text="https://www.semanticscholar.org/paper/Attention/Vaswani/204e3073870fae3d05bcbc2f6a8e263d9b72e776",
+    )
+
+    assert ingest_slack_message(db_session, doi_message) == 1
+    assert ingest_slack_message(db_session, semantic_scholar_message) == 1
+
+    papers = sorted(db_session.query(Paper).all(), key=lambda paper: paper.source_type)
+    assert [(paper.source_type, paper.source_id) for paper in papers] == [
+        ("doi", "10.1145/3366423.3380138"),
+        ("semantic_scholar", "204e3073870fae3d05bcbc2f6a8e263d9b72e776"),
+    ]
+
+
+def test_same_message_does_not_duplicate_when_backfill_has_no_workspace_or_url_changes(db_session):
+    first = SlackMessage(
+        team_id=None,
         channel_id="C1",
         channel_name="reading",
         channel_is_private=False,
@@ -79,6 +113,7 @@ def test_same_message_does_not_duplicate_when_url_variant_changes(db_session):
 
     mentions = db_session.query(SlackMention).all()
     assert len(mentions) == 1
+    assert mentions[0].team_id == "T1"
     assert mentions[0].user_name == "Ada"
     assert mentions[0].slack_permalink == "https://slack.example/1"
 

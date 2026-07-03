@@ -85,13 +85,13 @@ def ingest_slack_message(
 
         exists = db.scalar(
             select(SlackMention).where(
-                SlackMention.team_id == message.team_id,
                 SlackMention.channel_id == message.channel_id,
                 SlackMention.message_ts == message.message_ts,
                 SlackMention.paper_id == paper.id,
             )
         )
         if exists:
+            exists.team_id = message.team_id or exists.team_id
             exists.channel_name = message.channel_name
             exists.user_name = message.user_name or exists.user_name
             exists.slack_permalink = message.permalink or exists.slack_permalink

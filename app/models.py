@@ -87,11 +87,9 @@ class SlackMention(Base):
     __tablename__ = "slack_mentions"
     __table_args__ = (
         UniqueConstraint(
-            "team_id",
             "channel_id",
             "message_ts",
             "paper_id",
-            "original_url",
             name="uq_slack_mention",
         ),
         Index("ix_slack_mentions_channel_ts", "channel_id", "message_ts"),
