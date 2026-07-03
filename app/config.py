@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     backfill_limit_per_channel: int = 200
     arxiv_request_delay_seconds: float = 3.0
 
+    zotero_api_key: str | None = None
+    zotero_group_id: str | None = None
+    zotero_api_base_url: str = "https://api.zotero.org"
+    zotero_sync_limit: int = 20
+
 
 @lru_cache
 def get_settings() -> Settings:
