@@ -14,7 +14,8 @@ The app is not a broad public JSON API. Most user-facing behavior is server-rend
 - **Live results** — `/search/results` returns rendered result HTML and count (`app/main.py:99`).
 - **Paper detail** — `/papers/{paper_id}` (`app/main.py:140`).
 - **BibTeX** — `/papers/{paper_id}.bib` returns text (`app/main.py:126`).
-- **Status** — `/status` shows counts and channels (`app/main.py:168`).
+- **Status** — `/status` shows counts, work queues, retry actions, channels, and recent ingestion events (`app/main.py:168`).
+- **Operator retry** — `/operator/papers/{paper_id}/retry-metadata` and `/operator/papers/{paper_id}/retry-zotero` reset failed/pending work for worker pickup.
 - **Slack webhook** — `/slack/events` verifies Slack signature and ingests messages (`app/main.py:193`).
 
 ## Authentication Boundaries
@@ -35,9 +36,9 @@ Search filters are query string parameters: `q`, `channel`, `user`, `date_from`,
 
 Postgres uses full-text search; SQLite falls back to `ILIKE` patterns (`app/services/search.py:63`). Sort is either recent or mention count.
 
-## Future Zotero Operator Routes
+## Zotero Operator Routes
 
-Prefer small authenticated routes for operator actions such as retry sync, inspect pending work, or manually import an external related paper. Keep destructive or irreversible actions explicit. Do not make Slack postbacks or public routes for Zotero writes during the trial.
+Operator retry routes are small authenticated POST routes. They do not call external APIs directly; they reset local retry state so the worker can try metadata or Zotero sync again. Keep future destructive or irreversible actions explicit. Do not make Slack postbacks or public routes for Zotero writes during the trial.
 
 ## Response Shape Guidance
 
@@ -47,7 +48,7 @@ Text endpoints, such as BibTeX, should stay narrow and authenticated. If future 
 
 ## Operator Actions
 
-For retry and sync actions, prefer POST routes. A GET route should inspect state, not mutate Zotero or Slack-facing data. Mutating routes should report enough status for the operator to tell whether work was queued, completed, or failed.
+For retry and sync actions, prefer POST routes. A GET route should inspect state, not mutate Zotero or Slack-facing data. Mutating routes should report enough status for the operator to tell whether work was queued, completed, or failed. Error strings rendered in operator pages must be redacted before display.
 
 Manual import of external related papers should be explicit. Do not create a Zotero item because a viewer opened a detail page or because related-paper suggestions were refreshed.
 

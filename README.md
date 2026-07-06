@@ -8,6 +8,7 @@ The current MVP gives you:
 - Backfill for channels the bot has joined.
 - arXiv, DOI/Crossref, and Semantic Scholar metadata.
 - Zotero group item sync, channel-based collections, and bot-owned provenance notes.
+- Operator status queues with metadata/Zotero retry controls.
 - Search by paper text, channel, sharer name, date, and share count.
 - Shared-password access.
 
@@ -130,6 +131,17 @@ docker compose up --build
 
 Once a paper has metadata, the worker creates a Zotero item in the group library, lazily creates a collection for the Slack channel, and writes one child note titled `Bot notes` with the Slack share history.
 
+## Operator Status
+
+Open `/status` after logging in to inspect:
+
+- pending and failed metadata work
+- pending and failed Zotero sync work
+- recent ingestion events
+- channel backfill and catch-up timestamps
+
+Retry buttons reset failed metadata or Zotero sync state so the worker can try again immediately. Displayed errors are redacted before rendering.
+
 ## Public Tunnel For Slack Testing
 
 For local Slack testing, run the app in one terminal:
@@ -246,6 +258,7 @@ Docker uses Postgres and matches the intended deployment shape.
 - `app/services/slack.py`: Slack signature checks, Web API client, backfill.
 - `app/services/metadata.py`: arXiv metadata refresh.
 - `app/services/citations.py`: arXiv/Crossref BibTeX fetch.
+- `app/services/operator.py`: status helpers, retry state reset, error redaction.
 - `app/services/search.py`: keyword and filter search.
 - `app/extractors/arxiv.py`: arXiv URL normalization and Atom parsing.
 - `app/extractors/doi.py`: DOI resolver normalization and Crossref parsing.
@@ -261,4 +274,4 @@ Docker uses Postgres and matches the intended deployment shape.
 pytest
 ```
 
-The tests cover arXiv/DOI/Semantic Scholar normalization, Slack event parsing, dedupe, search filters, BibTeX, Zotero sync, and backfill helpers.
+The tests cover arXiv/DOI/Semantic Scholar normalization, Slack event parsing, dedupe, search filters, BibTeX, Zotero sync, operator retries, and backfill helpers.

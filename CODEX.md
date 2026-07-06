@@ -107,6 +107,7 @@ Core model:
 - `app/services/slack.py`: Slack signature checks, Web API client, event/backfill helpers.
 - `app/services/metadata.py`: arXiv metadata refresh.
 - `app/services/citations.py`: arXiv/Crossref BibTeX fetch.
+- `app/services/operator.py`: retry state reset and redacted operator error display.
 - `app/services/search.py`: keyword and filter search.
 - `app/services/zotero.py`: Zotero group item sync, collection mapping, and bot-owned provenance notes.
 - `app/extractors/arxiv.py`: arXiv URL normalization and Atom parsing.
@@ -279,7 +280,20 @@ Implemented first vertical slice:
 - The bot writes one child note titled `Bot notes` with Slack channel, sharer, date, Slack permalink, and shared link.
 - Bot notes intentionally exclude full Slack message text, stack traces, retry details, and sync IDs.
 - Private-channel-only papers are skipped for Zotero sync during the trial.
-- Status page shows Zotero synced/failed counts.
+- Status page shows Zotero synced/failed counts plus pending/failed work queues.
+
+## Operator Status And Retry
+
+Implemented:
+
+- `/status` shows pending/failed metadata work.
+- `/status` shows pending/failed Zotero work.
+- `/status` shows recent ingestion events and channel backfill/catch-up timestamps.
+- `POST /operator/papers/{paper_id}/retry-metadata` marks metadata pending and clears metadata error/retry delay.
+- `POST /operator/papers/{paper_id}/retry-zotero` marks Zotero sync pending, clears sync error, and sets immediate retry eligibility.
+- Operator-visible errors pass through redaction before rendering; raw stored errors are not changed.
+
+Retry routes are authenticated with the same shared-password cookie as the local status/search pages. They do not perform external API calls directly; they make work eligible for the worker.
 
 Required Zotero env vars for real sync:
 
@@ -392,6 +406,7 @@ Current tests cover:
 - `.bib` route.
 - joined-channel backfill helper.
 - signed live Slack Events ingestion route.
+- operator status and retry routes.
 
 Known warnings:
 
@@ -407,7 +422,7 @@ Resolved deployment issue:
 
 Good next steps:
 
-- Improve status page wording as the product settles.
+- Add external related-paper suggestions in `Bot notes`.
 - Add Alembic migrations.
 - Add database backups before any real deployment.
 - Add publisher/journal page resolution, likely through Zotero translators or a dedicated metadata resolver.
@@ -428,4 +443,4 @@ Good next steps:
 - BibTeX should appear in a modal.
 - Status page should stay simple.
 - `Mentions` label changed to `Papers w/ dupes`.
-- Failed metadata was removed from the status page.
+- Failed metadata was originally hidden from the simple demo status page, but the operator status surface now intentionally shows redacted failure details and retry actions.
