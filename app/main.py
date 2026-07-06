@@ -1,19 +1,20 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.auth import COOKIE_NAME, auth_token, is_authenticated
 from app.config import get_settings
 from app.database import get_db, init_db
-from app.models import Paper, SlackChannel, SlackMention, SlackUser, ZoteroItemSync
+from app.models import IngestionEvent, Paper, SlackChannel, SlackMention, SlackUser, ZoteroItemSync
 from app.services.ingestion import ingest_slack_message
 from app.services.citations import preferred_bibtex
+from app.services.operator import redact_error, retry_metadata, retry_zotero_sync
 from app.services.search import search_papers
 from app.services.slack import (
     SlackApiClient,
@@ -173,6 +174,10 @@ def status_page(request: Request, db: Session = Depends(get_db)):
         "papers": db.scalar(select(func.count(Paper.id))) or 0,
         "mentions": db.scalar(select(func.count(SlackMention.id))) or 0,
         "channels": db.scalar(select(func.count(SlackChannel.id))) or 0,
+        "ready_metadata": db.scalar(
+            select(func.count(Paper.id)).where(Paper.metadata_status == "ready")
+        )
+        or 0,
         "failed_metadata": db.scalar(
             select(func.count(Paper.id)).where(Paper.metadata_status == "failed")
         )
@@ -185,17 +190,104 @@ def status_page(request: Request, db: Session = Depends(get_db)):
             select(func.count(ZoteroItemSync.paper_id)).where(ZoteroItemSync.sync_status == "synced")
         )
         or 0,
+        "zotero_pending": db.scalar(
+            select(func.count(Paper.id))
+            .outerjoin(ZoteroItemSync, ZoteroItemSync.paper_id == Paper.id)
+            .where(
+                Paper.metadata_status == "ready",
+                or_(ZoteroItemSync.paper_id.is_(None), ZoteroItemSync.sync_status == "pending"),
+            )
+        )
+        or 0,
         "zotero_failed": db.scalar(
             select(func.count(ZoteroItemSync.paper_id)).where(ZoteroItemSync.sync_status == "failed")
         )
         or 0,
     }
-    channels = db.scalars(select(SlackChannel).order_by(SlackChannel.name)).all()
+    channels = [
+        {
+            "channel": channel,
+            "last_backfilled_at": _format_slack_ts(channel.last_backfilled_ts),
+            "last_catchup_at": _format_slack_ts(channel.last_catchup_ts),
+        }
+        for channel in db.scalars(select(SlackChannel).order_by(SlackChannel.name)).all()
+    ]
+    metadata_work = [
+        {
+            "paper": paper,
+            "status": paper.metadata_status,
+            "error": redact_error(paper.metadata_error),
+            "next_retry_at": paper.next_metadata_retry_at,
+        }
+        for paper in db.scalars(
+            select(Paper)
+            .where(Paper.metadata_status.in_(["pending", "failed"]))
+            .order_by(Paper.created_at.desc())
+            .limit(25)
+        )
+    ]
+    zotero_work = [
+        {
+            "paper": paper,
+            "sync": sync,
+            "status": sync.sync_status if sync else "pending",
+            "error": redact_error(sync.sync_error if sync else None),
+            "next_retry_at": sync.next_sync_retry_at if sync else None,
+        }
+        for paper, sync in db.execute(
+            select(Paper, ZoteroItemSync)
+            .outerjoin(ZoteroItemSync, ZoteroItemSync.paper_id == Paper.id)
+            .where(
+                Paper.metadata_status == "ready",
+                or_(
+                    ZoteroItemSync.paper_id.is_(None),
+                    ZoteroItemSync.sync_status.in_(["pending", "failed"]),
+                ),
+            )
+            .order_by(Paper.last_seen_at.desc())
+            .limit(25)
+        ).all()
+    ]
+    recent_events = db.scalars(
+        select(IngestionEvent).order_by(IngestionEvent.created_at.desc()).limit(10)
+    ).all()
     return templates.TemplateResponse(
         request,
         "status.html",
-        {"counts": counts, "channels": channels},
+        {
+            "counts": counts,
+            "channels": channels,
+            "metadata_work": metadata_work,
+            "zotero_work": zotero_work,
+            "recent_events": recent_events,
+        },
     )
+
+
+@app.post("/operator/papers/{paper_id}/retry-metadata")
+def retry_metadata_route(
+    paper_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    if not is_authenticated(request):
+        return RedirectResponse("/login", status_code=303)
+    if retry_metadata(db, paper_id) is None:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    return RedirectResponse("/status", status_code=303)
+
+
+@app.post("/operator/papers/{paper_id}/retry-zotero")
+def retry_zotero_route(
+    paper_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    if not is_authenticated(request):
+        return RedirectResponse("/login", status_code=303)
+    if retry_zotero_sync(db, paper_id) is None:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    return RedirectResponse("/status", status_code=303)
 
 
 @app.post("/slack/events")
@@ -271,3 +363,13 @@ def _blank_to_none(value: str | None) -> str | None:
     if value is None or value == "":
         return None
     return value
+
+
+def _format_slack_ts(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError):
+        return value
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")

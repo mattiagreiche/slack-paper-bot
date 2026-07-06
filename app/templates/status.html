@@ -11,8 +11,75 @@
   <div><strong>{{ counts.mentions }}</strong><span>Papers w/ dupes</span></div>
   <div><strong>{{ counts.channels }}</strong><span>Channels</span></div>
   <div><strong>{{ counts.pending_metadata }}</strong><span>Pending metadata</span></div>
+  <div><strong>{{ counts.failed_metadata }}</strong><span>Failed metadata</span></div>
+  <div><strong>{{ counts.ready_metadata }}</strong><span>Ready metadata</span></div>
+  <div><strong>{{ counts.zotero_pending }}</strong><span>Zotero pending</span></div>
   <div><strong>{{ counts.zotero_synced }}</strong><span>Zotero synced</span></div>
   <div><strong>{{ counts.zotero_failed }}</strong><span>Zotero failed</span></div>
+</section>
+
+<section class="table-section">
+  <h2>Metadata work</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Paper</th>
+        <th>Status</th>
+        <th>Error</th>
+        <th>Next retry</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in metadata_work %}
+      <tr>
+        <td><a href="/papers/{{ row.paper.id }}">{{ row.paper.title or row.paper.source_type ~ ":" ~ row.paper.source_id }}</a></td>
+        <td>{{ row.status }}</td>
+        <td class="error-cell">{% if row.error %}{{ row.error }}{% else %}&mdash;{% endif %}</td>
+        <td>{% if row.next_retry_at %}{{ row.next_retry_at }}{% else %}&mdash;{% endif %}</td>
+        <td>
+          <form action="/operator/papers/{{ row.paper.id }}/retry-metadata" method="post">
+            <button class="button compact" type="submit">Retry metadata</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">No pending or failed metadata work.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="table-section">
+  <h2>Zotero work</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Paper</th>
+        <th>Status</th>
+        <th>Error</th>
+        <th>Next retry</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in zotero_work %}
+      <tr>
+        <td><a href="/papers/{{ row.paper.id }}">{{ row.paper.title or row.paper.source_type ~ ":" ~ row.paper.source_id }}</a></td>
+        <td>{{ row.status }}</td>
+        <td class="error-cell">{% if row.error %}{{ row.error }}{% else %}&mdash;{% endif %}</td>
+        <td>{% if row.next_retry_at %}{{ row.next_retry_at }}{% else %}&mdash;{% endif %}</td>
+        <td>
+          <form action="/operator/papers/{{ row.paper.id }}/retry-zotero" method="post">
+            <button class="button compact" type="submit">Retry Zotero</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">No pending or failed Zotero work.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
 </section>
 
 <section class="table-section">
@@ -27,15 +94,39 @@
       </tr>
     </thead>
     <tbody>
-      {% for channel in channels %}
+      {% for row in channels %}
       <tr>
-        <td>#{{ channel.name }}</td>
-        <td>{{ "Private" if channel.is_private else "Public" }}</td>
-        <td>{% if channel.last_backfilled_ts %}{{ channel.last_backfilled_ts }}{% else %}&mdash;{% endif %}</td>
-        <td>{% if channel.last_catchup_ts %}{{ channel.last_catchup_ts }}{% else %}&mdash;{% endif %}</td>
+        <td>#{{ row.channel.name }}</td>
+        <td>{{ "Private" if row.channel.is_private else "Public" }}</td>
+        <td>{% if row.last_backfilled_at %}{{ row.last_backfilled_at }}{% else %}&mdash;{% endif %}</td>
+        <td>{% if row.last_catchup_at %}{{ row.last_catchup_at }}{% else %}&mdash;{% endif %}</td>
       </tr>
       {% else %}
       <tr><td colspan="4">No channels recorded yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="table-section">
+  <h2>Recent ingestion events</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Source</th>
+        <th>Status</th>
+        <th>Recorded</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for event in recent_events %}
+      <tr>
+        <td>{{ event.source }}</td>
+        <td>{{ event.status }}</td>
+        <td>{{ event.created_at }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3">No ingestion events recorded yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>

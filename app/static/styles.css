@@ -211,6 +211,13 @@ button,
   color: var(--accent-strong);
 }
 
+.button.compact {
+  font-size: 13px;
+  min-height: 34px;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
 .filters {
   display: grid;
   gap: 12px;
@@ -444,8 +451,13 @@ label {
 .metric-grid {
   display: grid;
   gap: 14px;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   margin-bottom: 28px;
+}
+
+.table-section {
+  margin-top: 18px;
+  overflow-x: auto;
 }
 
 table {
@@ -464,6 +476,12 @@ th {
   color: var(--muted);
   font-size: 12px;
   text-transform: uppercase;
+}
+
+.error-cell {
+  color: var(--warn);
+  max-width: 360px;
+  overflow-wrap: anywhere;
 }
 
 .login-body {
