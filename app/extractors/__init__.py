@@ -1,7 +1,9 @@
 from app.extractors.arxiv import ArxivExtractor
 from app.extractors.base import PaperExtractor, PaperMetadata, SourceKey
+from app.extractors.doi import DoiExtractor
+from app.extractors.semantic_scholar import SemanticScholarExtractor
 
-EXTRACTORS = [ArxivExtractor()]
+EXTRACTORS = [ArxivExtractor(), DoiExtractor(), SemanticScholarExtractor()]
 
 
 def extractor_for_url(url: str) -> PaperExtractor | None:
@@ -21,10 +23,11 @@ def extractor_for_source(source_type: str) -> PaperExtractor | None:
 __all__ = [
     "EXTRACTORS",
     "ArxivExtractor",
+    "DoiExtractor",
     "PaperExtractor",
     "PaperMetadata",
+    "SemanticScholarExtractor",
     "SourceKey",
     "extractor_for_source",
     "extractor_for_url",
 ]
-
