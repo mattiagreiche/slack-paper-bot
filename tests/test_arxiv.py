@@ -2,7 +2,12 @@ from datetime import timezone
 
 import pytest
 
-from app.extractors.arxiv import ArxivExtractor, canonicalize_arxiv_id, parse_arxiv_feed
+from app.extractors.arxiv import (
+    ArxivExtractor,
+    canonicalize_arxiv_id,
+    parse_arxiv_abs_page,
+    parse_arxiv_feed,
+)
 from app.extractors.base import SourceKey
 
 
@@ -48,3 +53,33 @@ def test_parse_arxiv_feed_extracts_metadata():
     assert metadata.categories == ["cs.CL", "cs.LG"]
     assert metadata.published_at.tzinfo == timezone.utc
 
+
+def test_parse_arxiv_abs_page_extracts_fallback_metadata():
+    source_key = SourceKey(
+        source_type="arxiv",
+        source_id="2006.01855",
+        canonical_url="https://arxiv.org/abs/2006.01855",
+        pdf_url="https://arxiv.org/pdf/2006.01855.pdf",
+    )
+
+    metadata = parse_arxiv_abs_page(
+        """
+        <html><head>
+          <meta name="citation_title" content="A Paper &amp; Its Title">
+          <meta name="citation_author" content="Lovelace, Ada">
+          <meta name="citation_author" content="Turing, Alan">
+          <meta name="citation_date" content="2020/06/02">
+          <meta name="citation_pdf_url" content="https://arxiv.org/pdf/2006.01855">
+          <meta name="citation_abstract" content="A useful abstract.">
+        </head></html>
+        """,
+        source_key,
+    )
+
+    assert metadata.title == "A Paper & Its Title"
+    assert metadata.authors == ["Lovelace, Ada", "Turing, Alan"]
+    assert metadata.abstract == "A useful abstract."
+    assert metadata.published_at.year == 2020
+    assert metadata.published_at.tzinfo == timezone.utc
+    assert metadata.pdf_url == "https://arxiv.org/pdf/2006.01855"
+    assert metadata.categories == []

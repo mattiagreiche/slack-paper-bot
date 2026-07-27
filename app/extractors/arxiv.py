@@ -1,7 +1,8 @@
 import re
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timezone
 from html import unescape
+from html.parser import HTMLParser
 from urllib.parse import urlparse
 
 import httpx
@@ -48,9 +49,20 @@ class ArxivExtractor:
         )
 
     async def fetch_metadata(self, source_key: SourceKey) -> PaperMetadata:
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.get(ARXIV_API_URL, params={"id_list": source_key.source_id})
-            response.raise_for_status()
+        async with httpx.AsyncClient(
+            timeout=15,
+            headers={"User-Agent": "slack-paper-archive/0.1"},
+        ) as client:
+            try:
+                response = await client.get(
+                    ARXIV_API_URL,
+                    params={"id_list": source_key.source_id},
+                )
+                response.raise_for_status()
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                if not _can_fallback_to_abs_page(exc):
+                    raise
+                return await _fetch_abs_page_metadata(client, source_key)
         return parse_arxiv_feed(response.text, source_key)
 
 
@@ -110,6 +122,73 @@ def parse_arxiv_feed(xml_text: str, source_key: SourceKey) -> PaperMetadata:
     )
 
 
+def parse_arxiv_abs_page(html_text: str, source_key: SourceKey) -> PaperMetadata:
+    parser = _CitationMetaParser()
+    parser.feed(html_text)
+    title = parser.first("citation_title")
+    abstract = parser.first("citation_abstract")
+    if not title or not abstract:
+        raise ValueError(f"arXiv abstract page missing metadata for {source_key.source_id}")
+
+    pdf_url = parser.first("citation_pdf_url") or source_key.pdf_url
+    return PaperMetadata(
+        source_type=source_key.source_type,
+        source_id=source_key.source_id,
+        title=_clean_text(unescape(title)),
+        authors=[
+            _clean_text(unescape(author))
+            for author in parser.all("citation_author")
+            if author.strip()
+        ],
+        abstract=_clean_text(unescape(abstract)),
+        categories=[],
+        primary_category=None,
+        published_at=_parse_abs_date(parser.first("citation_date")),
+        updated_at=None,
+        canonical_url=source_key.canonical_url,
+        pdf_url=pdf_url,
+    )
+
+
+async def _fetch_abs_page_metadata(
+    client: httpx.AsyncClient,
+    source_key: SourceKey,
+) -> PaperMetadata:
+    response = await client.get(source_key.canonical_url)
+    response.raise_for_status()
+    return parse_arxiv_abs_page(response.text, source_key)
+
+
+def _can_fallback_to_abs_page(exc: Exception) -> bool:
+    if isinstance(exc, httpx.TransportError):
+        return True
+    return isinstance(exc, httpx.HTTPStatusError) and (
+        exc.response.status_code == 429 or exc.response.status_code >= 500
+    )
+
+
+class _CitationMetaParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.values: dict[str, list[str]] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "meta":
+            return
+        attributes = dict(attrs)
+        name = attributes.get("name")
+        content = attributes.get("content")
+        if name and content and name.startswith("citation_"):
+            self.values.setdefault(name, []).append(content)
+
+    def first(self, name: str) -> str | None:
+        values = self.values.get(name, [])
+        return values[0] if values else None
+
+    def all(self, name: str) -> list[str]:
+        return self.values.get(name, [])
+
+
 def _strip_slack_wrapping(url: str) -> str:
     text = url.strip("<>")
     if "|" in text:
@@ -140,3 +219,8 @@ def _parse_dt(value: str | None) -> datetime | None:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
+
+def _parse_abs_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    return datetime.strptime(value, "%Y/%m/%d").replace(tzinfo=timezone.utc)
