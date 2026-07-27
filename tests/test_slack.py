@@ -4,6 +4,7 @@ import pytest
 
 from app.config import Settings
 from app.services.slack import (
+    SlackApiError,
     SlackSignatureError,
     backfill_channel,
     enrich_slack_message,
@@ -11,6 +12,7 @@ from app.services.slack import (
     slack_message_from_event,
     verify_slack_signature,
 )
+from app.services.installations import SlackWorkspaceContext
 
 
 def test_slack_message_from_channel_event():
@@ -59,7 +61,12 @@ def test_slack_signature_rejects_missing_secret():
 
 class FakeSlackClient:
     async def conversation_info(self, channel_id):
-        return {"id": channel_id, "name": "papers", "is_private": False}
+        return {
+            "id": channel_id,
+            "name": "papers",
+            "is_private": False,
+            "is_member": True,
+        }
 
     async def user_info(self, user_id):
         return {
@@ -111,7 +118,12 @@ async def test_joined_channels_filters_to_membership():
 
 class FakePrivateSlackClient:
     async def conversation_info(self, channel_id):
-        return {"id": channel_id, "name": "private-papers", "is_private": True}
+        return {
+            "id": channel_id,
+            "name": "private-papers",
+            "is_private": True,
+            "is_member": True,
+        }
 
     async def history(self, channel_id, *, oldest=None, latest=None, limit=200):
         raise AssertionError("Private channel history should not be read during the trial")
@@ -119,9 +131,17 @@ class FakePrivateSlackClient:
 
 @pytest.mark.asyncio
 async def test_backfill_channel_skips_private_channels(db_session):
+    workspace = SlackWorkspaceContext(
+        team_id="T1",
+        team_name="Workspace",
+        bot_user_id="U-BOT",
+        granted_scopes=frozenset(),
+        bot_token="xoxb-test",
+    )
     count = await backfill_channel(
         db_session,
         FakePrivateSlackClient(),
+        workspace,
         "G1",
         oldest=None,
         latest=None,
@@ -129,3 +149,8 @@ async def test_backfill_channel_skips_private_channels(db_session):
     )
 
     assert count == 0
+
+
+def test_slack_api_error_classifies_invalid_credentials():
+    assert SlackApiError("auth.test", "invalid_auth").credential_invalid is True
+    assert SlackApiError("conversations.info", "channel_not_found").credential_invalid is False

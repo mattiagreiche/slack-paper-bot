@@ -8,7 +8,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import get_settings
 from app.database import SessionLocal, init_db
-from app.services.slack import SlackApiClient, backfill_channel
+from app.services.legacy_slack import resolve_configured_workspace_context
+from app.services.slack import (
+    SlackApiClient,
+    SlackApiError,
+    backfill_channel,
+    deactivate_invalid_credential,
+)
 
 
 def date_to_slack_ts(value: str, *, end_of_day: bool = False) -> str:
@@ -18,20 +24,38 @@ def date_to_slack_ts(value: str, *, end_of_day: bool = False) -> str:
 
 
 async def run(channel_id: str, oldest: str | None, latest: str | None, limit: int) -> None:
-    settings = get_settings()
-    if not settings.slack_bot_token:
-        raise SystemExit("SLACK_BOT_TOKEN is required for backfill.")
     init_db()
     with SessionLocal() as db:
-        count = await backfill_channel(
-            db,
-            SlackApiClient(settings.slack_bot_token),
-            channel_id,
-            oldest=oldest,
-            latest=latest,
-            limit=limit,
-        )
+        workspace = _active_workspace(db)
+        try:
+            count = await backfill_channel(
+                db,
+                SlackApiClient(workspace.bot_token),
+                workspace,
+                channel_id,
+                oldest=oldest,
+                latest=latest,
+                limit=limit,
+            )
+        except SlackApiError as exc:
+            deactivate_invalid_credential(
+                db,
+                team_id=workspace.team_id,
+                error=exc,
+            )
+            raise SystemExit(f"Slack backfill failed: {exc.error_code}") from None
     print(f"Backfilled {count} paper mentions from {channel_id}.")
+
+
+def _active_workspace(db):
+    settings = get_settings()
+    workspace = resolve_configured_workspace_context(
+        db,
+        settings=settings,
+    )
+    if workspace is None:
+        raise SystemExit("An active Slack installation is required for backfill.")
+    return workspace
 
 
 def main() -> None:

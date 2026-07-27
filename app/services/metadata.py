@@ -8,11 +8,19 @@ from sqlalchemy.orm import Session
 from app.extractors import SourceKey, extractor_for_source
 from app.extractors.base import PaperMetadata
 from app.config import get_settings
-from app.models import Paper, utcnow
+from app.models import Paper, SlackChannel, SlackMention, utcnow
 from app.services.citations import refresh_citation
 
 
-async def refresh_pending_metadata(db: Session, *, limit: int = 20) -> int:
+async def refresh_pending_metadata(
+    db: Session,
+    *,
+    team_id: str | None,
+    limit: int = 20,
+) -> int:
+    if not team_id:
+        return 0
+
     now = utcnow()
     papers = list(
         db.scalars(
@@ -20,6 +28,7 @@ async def refresh_pending_metadata(db: Session, *, limit: int = 20) -> int:
             .where(
                 Paper.metadata_status.in_(["pending", "failed"]),
                 or_(Paper.next_metadata_retry_at.is_(None), Paper.next_metadata_retry_at <= now),
+                _eligible_public_mention_exists(team_id),
             )
             .order_by(Paper.created_at.asc())
             .limit(limit)
@@ -53,7 +62,7 @@ async def refresh_pending_metadata(db: Session, *, limit: int = 20) -> int:
             refreshed += 1
         except Exception as exc:  # noqa: BLE001 - stored for operator visibility.
             paper.metadata_status = "failed"
-            paper.metadata_error = str(exc)
+            paper.metadata_error = _metadata_error_message(exc)
             delay_minutes = min(60 * 24, 2 ** min(paper.metadata_attempts, 8))
             paper.next_metadata_retry_at = utcnow() + timedelta(minutes=delay_minutes)
         if index < len(papers) - 1 and delay_seconds > 0:
@@ -63,8 +72,13 @@ async def refresh_pending_metadata(db: Session, *, limit: int = 20) -> int:
     return refreshed
 
 
-def refresh_pending_metadata_sync(db: Session, *, limit: int = 20) -> int:
-    return asyncio.run(refresh_pending_metadata(db, limit=limit))
+def refresh_pending_metadata_sync(
+    db: Session,
+    *,
+    team_id: str | None,
+    limit: int = 20,
+) -> int:
+    return asyncio.run(refresh_pending_metadata(db, team_id=team_id, limit=limit))
 
 
 def apply_metadata(paper: Paper, metadata: PaperMetadata) -> None:
@@ -87,3 +101,22 @@ def normalize_title(title: str | None) -> str | None:
     if not title:
         return None
     return re.sub(r"\s+", " ", title).strip().lower()
+
+
+def _metadata_error_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    return message or type(exc).__name__
+
+
+def _eligible_public_mention_exists(team_id: str):
+    return (
+        select(SlackMention.id)
+        .join(SlackChannel, SlackChannel.id == SlackMention.channel_id)
+        .where(
+            SlackMention.paper_id == Paper.id,
+            SlackMention.team_id == team_id,
+            SlackChannel.team_id == team_id,
+            SlackChannel.is_private.is_(False),
+        )
+        .exists()
+    )

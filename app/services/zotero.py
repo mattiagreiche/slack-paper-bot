@@ -13,11 +13,25 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import (
     Paper,
+    RelatedPaperRun,
     SlackChannel,
+    SlackInstallation,
     SlackMention,
+    TrialZoteroDestination,
     ZoteroCollectionSync,
     ZoteroItemSync,
     utcnow,
+)
+from app.services.credentials import CredentialCipher, CredentialEncryptionError
+from app.services.installations import (
+    VALID_CREDENTIAL_STATUS,
+    get_verified_zotero_context,
+)
+from app.services.related import (
+    ensure_related_run,
+    mark_related_note_synced,
+    related_suggestions_for_paper,
+    semantic_scholar_source_url,
 )
 
 
@@ -32,7 +46,20 @@ class ZoteroSettings:
 
 
 class ZoteroApiError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+    @property
+    def is_authentication_error(self) -> bool:
+        return self.status_code in {401, 403}
+
+
+@dataclass(frozen=True)
+class ZoteroDestinationVerification:
+    verified: bool
+    group_name: str | None = None
+    error: str | None = None
 
 
 class ZoteroApiClient:
@@ -66,8 +93,36 @@ class ZoteroApiClient:
                 headers=request_headers,
             )
         if response.status_code >= 400:
-            raise ZoteroApiError(f"Zotero API {method} {path} failed: {response.status_code}")
+            raise ZoteroApiError(
+                f"Zotero API {method} {path} failed: {response.status_code}",
+                status_code=response.status_code,
+            )
         return response
+
+    async def verify_destination(self) -> str | None:
+        key_response = await self.request("GET", "/keys/current")
+        key_payload = key_response.json()
+        access = key_payload.get("access") if isinstance(key_payload, dict) else None
+        groups = access.get("groups") if isinstance(access, dict) else None
+        permission = groups.get(self.settings.group_id) if isinstance(groups, dict) else None
+        if permission is None and isinstance(groups, dict):
+            permission = groups.get("all")
+        if not (
+            isinstance(permission, dict)
+            and permission.get("library") is True
+            and permission.get("write") is True
+        ):
+            raise ZoteroApiError(
+                "Zotero key does not grant library write access to the destination"
+            )
+
+        response = await self.request("GET", self.prefix)
+        payload = response.json()
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            raise ZoteroApiError("Zotero group response did not include destination data")
+        name = data.get("name")
+        return str(name).strip() if name else None
 
     async def create_collection(self, name: str) -> str:
         response = await self.request(
@@ -92,13 +147,14 @@ class ZoteroApiClient:
                 return data.get("key") or item.get("key")
         return None
 
-    async def find_child_note_by_title(self, item_key: str, title: str) -> str | None:
+    async def find_bot_note(self, item_key: str) -> str | None:
         response = await self.request("GET", f"{self.prefix}/items/{item_key}/children")
         for item in response.json():
             data = item.get("data") or {}
             if data.get("itemType") != "note":
                 continue
-            if title in (data.get("note") or ""):
+            note = (data.get("note") or "").strip()
+            if note.startswith(f"<h1>{BOT_NOTE_TITLE}</h1>"):
                 return data.get("key") or item.get("key")
         return None
 
@@ -159,16 +215,35 @@ async def sync_ready_papers_to_zotero(
     *,
     client: ZoteroApiClient | None = None,
     limit: int | None = None,
+    team_id: str | None = None,
 ) -> int:
-    settings = _zotero_settings()
-    if settings is None and client is None:
-        return 0
-    client = client or ZoteroApiClient(settings)  # type: ignore[arg-type]
-    candidates = _sync_candidates(db, limit=limit or get_settings().zotero_sync_limit)
+    resolved_team_id = team_id or _active_team_id(db)
+    if client is None:
+        resolved = _persisted_zotero_settings(db)
+        if resolved is None or resolved_team_id is None:
+            return 0
+        client = ZoteroApiClient(resolved)
+
+    candidates = _sync_candidates(
+        db,
+        limit=limit or get_settings().zotero_sync_limit,
+        team_id=resolved_team_id,
+    )
     synced = 0
     for paper in candidates:
-        if await sync_paper_to_zotero(db, paper, client):
-            synced += 1
+        try:
+            if await sync_paper_to_zotero(
+                db,
+                paper,
+                client,
+                team_id=resolved_team_id,
+            ):
+                synced += 1
+        except ZoteroApiError as exc:
+            if not exc.is_authentication_error:
+                raise
+            invalidate_persisted_zotero_destination(db)
+            break
     db.commit()
     return synced
 
@@ -178,11 +253,25 @@ def sync_ready_papers_to_zotero_sync(
     *,
     client: ZoteroApiClient | None = None,
     limit: int | None = None,
+    team_id: str | None = None,
 ) -> int:
-    return asyncio.run(sync_ready_papers_to_zotero(db, client=client, limit=limit))
+    return asyncio.run(
+        sync_ready_papers_to_zotero(
+            db,
+            client=client,
+            limit=limit,
+            team_id=team_id,
+        )
+    )
 
 
-async def sync_paper_to_zotero(db: Session, paper: Paper, client: ZoteroApiClient) -> bool:
+async def sync_paper_to_zotero(
+    db: Session,
+    paper: Paper,
+    client: ZoteroApiClient,
+    *,
+    team_id: str | None = None,
+) -> bool:
     item_sync = db.get(ZoteroItemSync, paper.id)
     if item_sync is None:
         item_sync = ZoteroItemSync(paper_id=paper.id)
@@ -191,7 +280,7 @@ async def sync_paper_to_zotero(db: Session, paper: Paper, client: ZoteroApiClien
 
     item_sync.sync_attempts += 1
     try:
-        mentions = _public_mentions(db, paper.id)
+        mentions = _public_mentions(db, paper.id, team_id=team_id)
         if not mentions:
             item_sync.sync_status = "skipped"
             item_sync.sync_error = "No public Slack mentions available for Zotero sync"
@@ -200,7 +289,14 @@ async def sync_paper_to_zotero(db: Session, paper: Paper, client: ZoteroApiClien
 
         collection_keys = []
         for mention, channel in mentions:
-            collection_keys.append(await _ensure_channel_collection(db, channel, client))
+            collection_keys.append(
+                await _ensure_channel_collection(
+                    db,
+                    channel,
+                    client,
+                    team_id=team_id,
+                )
+            )
 
         marker = _source_marker(paper)
         if not item_sync.zotero_item_key:
@@ -218,11 +314,15 @@ async def sync_paper_to_zotero(db: Session, paper: Paper, client: ZoteroApiClien
         else:
             await client.ensure_item_collections(item_sync.zotero_item_key, sorted(set(collection_keys)))
 
-        note_html = render_bot_note(paper, [mention for mention, _channel in mentions])
+        note_html = render_bot_note(
+            paper,
+            [mention for mention, _channel in mentions],
+            related_run=db.get(RelatedPaperRun, paper.id),
+            related_suggestions=related_suggestions_for_paper(db, paper.id),
+        )
         if not item_sync.zotero_note_key:
-            item_sync.zotero_note_key = await client.find_child_note_by_title(
-                item_sync.zotero_item_key,
-                BOT_NOTE_TITLE,
+            item_sync.zotero_note_key = await client.find_bot_note(
+                item_sync.zotero_item_key
             )
         if item_sync.zotero_note_key:
             await client.update_note(item_sync.zotero_note_key, note_html)
@@ -236,16 +336,27 @@ async def sync_paper_to_zotero(db: Session, paper: Paper, client: ZoteroApiClien
         item_sync.sync_error = None
         item_sync.next_sync_retry_at = None
         item_sync.last_synced_at = utcnow()
+        mark_related_note_synced(db, paper.id)
+        ensure_related_run(db, paper, team_id=team_id)
         return True
+    except ZoteroApiError as exc:
+        _record_sync_failure(item_sync, exc)
+        if exc.is_authentication_error:
+            invalidate_persisted_zotero_destination(db)
+            raise
+        return False
     except Exception as exc:
-        item_sync.sync_status = "failed"
-        item_sync.sync_error = str(exc)
-        delay_minutes = min(60 * 24, 2 ** min(item_sync.sync_attempts, 8))
-        item_sync.next_sync_retry_at = utcnow() + timedelta(minutes=delay_minutes)
+        _record_sync_failure(item_sync, exc)
         return False
 
 
-def render_bot_note(paper: Paper, mentions: list[SlackMention]) -> str:
+def render_bot_note(
+    paper: Paper,
+    mentions: list[SlackMention],
+    *,
+    related_run: RelatedPaperRun | None = None,
+    related_suggestions: list | None = None,
+) -> str:
     rows = []
     for mention in sorted(mentions, key=lambda item: item.posted_at or item.created_at, reverse=True):
         channel = f"#{mention.channel_name}"
@@ -264,42 +375,67 @@ def render_bot_note(paper: Paper, mentions: list[SlackMention]) -> str:
             "</li>"
         )
 
-    title = escape(paper.title or f"{paper.source_type}:{paper.source_id}")
     return (
         f"<h1>{BOT_NOTE_TITLE}</h1>"
-        f"<p>Bot-generated note for <em>{title}</em>.</p>"
+        f"{_render_related_section(paper, related_run, related_suggestions or [])}"
         "<h2>Slack shares</h2>"
         f"<ul>{''.join(rows)}</ul>"
     )
 
 
-def _sync_candidates(db: Session, *, limit: int) -> list[Paper]:
+def _sync_candidates(
+    db: Session,
+    *,
+    limit: int,
+    team_id: str | None = None,
+) -> list[Paper]:
     now = utcnow()
+    conditions = [
+        Paper.metadata_status == "ready",
+        or_(
+            ZoteroItemSync.paper_id.is_(None),
+            ZoteroItemSync.last_synced_at.is_(None),
+            ZoteroItemSync.next_sync_retry_at <= now,
+            Paper.last_seen_at > ZoteroItemSync.last_synced_at,
+            RelatedPaperRun.changed_since_zotero_sync.is_(True),
+        ),
+    ]
+    if team_id is not None:
+        conditions.append(_eligible_public_mention_exists(team_id))
     return list(
         db.scalars(
             select(Paper)
             .outerjoin(ZoteroItemSync, ZoteroItemSync.paper_id == Paper.id)
-            .where(
-                Paper.metadata_status == "ready",
-                or_(
-                    ZoteroItemSync.paper_id.is_(None),
-                    ZoteroItemSync.last_synced_at.is_(None),
-                    ZoteroItemSync.next_sync_retry_at <= now,
-                    Paper.last_seen_at > ZoteroItemSync.last_synced_at,
-                ),
-            )
+            .outerjoin(RelatedPaperRun, RelatedPaperRun.paper_id == Paper.id)
+            .where(*conditions)
             .order_by(Paper.last_seen_at.asc())
             .limit(limit)
         )
     )
 
 
-def _public_mentions(db: Session, paper_id: str) -> list[tuple[SlackMention, SlackChannel]]:
+def _public_mentions(
+    db: Session,
+    paper_id: str,
+    *,
+    team_id: str | None = None,
+) -> list[tuple[SlackMention, SlackChannel]]:
+    conditions = [
+        SlackMention.paper_id == paper_id,
+        SlackChannel.is_private.is_(False),
+    ]
+    if team_id is not None:
+        conditions.extend(
+            [
+                SlackMention.team_id == team_id,
+                SlackChannel.team_id == team_id,
+            ]
+        )
     return list(
         db.execute(
             select(SlackMention, SlackChannel)
             .join(SlackChannel, SlackChannel.id == SlackMention.channel_id)
-            .where(SlackMention.paper_id == paper_id, SlackChannel.is_private.is_(False))
+            .where(*conditions)
             .order_by(SlackMention.posted_at.desc())
         ).all()
     )
@@ -309,7 +445,11 @@ async def _ensure_channel_collection(
     db: Session,
     channel: SlackChannel,
     client: ZoteroApiClient,
+    *,
+    team_id: str | None = None,
 ) -> str:
+    if team_id is not None and channel.team_id != team_id:
+        raise ValueError("Slack channel does not belong to the active workspace")
     sync = db.get(ZoteroCollectionSync, channel.id)
     if sync and sync.zotero_collection_key:
         return sync.zotero_collection_key
@@ -363,6 +503,71 @@ def _date_string(paper: Paper) -> str:
     return ""
 
 
+def _render_related_section(
+    paper: Paper,
+    related_run: RelatedPaperRun | None,
+    suggestions: list,
+) -> str:
+    if related_run is None:
+        return ""
+    if related_run.status == "ready" and suggestions:
+        rows = []
+        for suggestion in suggestions:
+            title = escape(suggestion.title)
+            authors = _compact_authors(suggestion.authors)
+            year = str(suggestion.year or suggestion.publication_date or "").strip()
+            venue = suggestion.venue or ""
+            metadata = " - ".join(escape(value) for value in [authors, year, venue] if value)
+            link = suggestion.url or _semantic_scholar_url(suggestion.suggested_paper_id)
+            identifiers = _compact_identifiers(suggestion.external_ids)
+            detail = " ".join(value for value in [metadata, identifiers] if value)
+            if detail:
+                detail = f"<br><span>{detail}</span>"
+            rows.append(f'<li><a href="{escape(link)}">{title}</a>{detail}</li>')
+        return (
+            "<h2>Related papers (bot-generated via Semantic Scholar)</h2>"
+            f"<ol>{''.join(rows)}</ol>"
+            f'<p><a href="{escape(semantic_scholar_source_url(paper))}">'
+            "View this paper on Semantic Scholar</a> for more discovery options.</p>"
+        )
+    if related_run.status in {"failed", "unavailable"}:
+        return (
+            "<h2>Related papers (bot-generated via Semantic Scholar)</h2>"
+            "<p>Related papers unavailable from Semantic Scholar.</p>"
+        )
+    return ""
+
+
+def _compact_authors(authors: str | None) -> str:
+    if not authors:
+        return ""
+    values = [author.strip() for author in authors.splitlines() if author.strip()]
+    if len(values) <= 2:
+        return ", ".join(values)
+    return f"{values[0]}, {values[1]}, et al."
+
+
+def _compact_identifiers(external_ids: str | None) -> str:
+    if not external_ids:
+        return ""
+    try:
+        import json
+
+        data = json.loads(external_ids)
+    except (TypeError, ValueError):
+        return ""
+    parts = []
+    if data.get("DOI"):
+        parts.append(f"DOI: {escape(str(data['DOI']))}")
+    if data.get("ArXiv"):
+        parts.append(f"arXiv: {escape(str(data['ArXiv']))}")
+    return " - ".join(parts)
+
+
+def _semantic_scholar_url(paper_id: str) -> str:
+    return f"https://www.semanticscholar.org/paper/{paper_id}"
+
+
 def _source_marker(paper: Paper) -> str:
     return f"Slack Paper Archive: {paper.source_type}:{paper.source_id}"
 
@@ -383,12 +588,94 @@ def _write_token() -> str:
     return uuid4().hex
 
 
-def _zotero_settings() -> ZoteroSettings | None:
+async def verify_zotero_destination(
+    *,
+    group_id: str,
+    api_key: str,
+    api_base_url: str = "https://api.zotero.org",
+) -> ZoteroDestinationVerification:
+    if not group_id.strip() or not api_key or not api_base_url.strip():
+        return ZoteroDestinationVerification(
+            verified=False,
+            error="Zotero destination is incomplete",
+        )
+    client = ZoteroApiClient(
+        ZoteroSettings(
+            api_key=api_key,
+            group_id=group_id.strip(),
+            api_base_url=api_base_url.strip().rstrip("/"),
+        )
+    )
+    try:
+        group_name = await client.verify_destination()
+    except ZoteroApiError as exc:
+        if exc.is_authentication_error:
+            error = "Zotero denied access to the group library"
+        else:
+            error = "Zotero destination verification failed"
+        return ZoteroDestinationVerification(verified=False, error=error)
+    except (httpx.HTTPError, ValueError):
+        return ZoteroDestinationVerification(
+            verified=False,
+            error="Zotero destination verification failed",
+        )
+    return ZoteroDestinationVerification(verified=True, group_name=group_name)
+
+
+def invalidate_persisted_zotero_destination(db: Session) -> None:
+    destination = db.get(TrialZoteroDestination, 1)
+    if destination is None:
+        return
+    destination.is_verified = False
+    destination.status = "invalid"
+    destination.status_code = "access_revoked"
+    destination.status_message = "Zotero denied access; destination verification is required"
+    destination.last_validated_at = utcnow()
+
+
+def _record_sync_failure(item_sync: ZoteroItemSync, exc: Exception) -> None:
+    item_sync.sync_status = "failed"
+    item_sync.sync_error = str(exc)
+    delay_minutes = min(60 * 24, 2 ** min(item_sync.sync_attempts, 8))
+    item_sync.next_sync_retry_at = utcnow() + timedelta(minutes=delay_minutes)
+
+
+def _eligible_public_mention_exists(team_id: str):
+    return (
+        select(SlackMention.id)
+        .join(SlackChannel, SlackChannel.id == SlackMention.channel_id)
+        .where(
+            SlackMention.paper_id == Paper.id,
+            SlackMention.team_id == team_id,
+            SlackChannel.team_id == team_id,
+            SlackChannel.is_private.is_(False),
+        )
+        .exists()
+    )
+
+
+def _active_team_id(db: Session) -> str | None:
+    installation = db.get(SlackInstallation, 1)
+    if (
+        installation is None
+        or not installation.is_active
+        or installation.credential_status != VALID_CREDENTIAL_STATUS
+    ):
+        return None
+    return installation.team_id
+
+
+def _persisted_zotero_settings(db: Session) -> ZoteroSettings | None:
     settings = get_settings()
-    if not settings.zotero_api_key or not settings.zotero_group_id:
+    try:
+        cipher = CredentialCipher(settings.credential_encryption_key)
+        destination = get_verified_zotero_context(db, cipher=cipher)
+    except CredentialEncryptionError:
+        return None
+    if destination is None:
         return None
     return ZoteroSettings(
-        api_key=settings.zotero_api_key,
-        group_id=settings.zotero_group_id,
-        api_base_url=settings.zotero_api_base_url.rstrip("/"),
+        api_key=destination.api_key,
+        group_id=destination.group_id,
+        api_base_url=destination.api_base_url.rstrip("/"),
     )

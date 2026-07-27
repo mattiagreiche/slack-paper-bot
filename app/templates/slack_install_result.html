@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Slack installation</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="install-result">
+      <section class="panel">
+        <p class="eyebrow">Slack installation</p>
+        <h1>{{ "Authorization complete" if success else "Authorization not completed" }}</h1>
+        <p>{{ message }}</p>
+        {% if success %}
+        <p>A bot operator must configure Zotero and activate this workspace before ingestion begins.</p>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>

@@ -8,7 +8,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import get_settings
 from app.database import SessionLocal, init_db
-from app.services.slack import SlackApiClient, backfill_channel, joined_channels
+from app.services.legacy_slack import resolve_configured_workspace_context
+from app.services.slack import (
+    SlackApiClient,
+    SlackApiError,
+    backfill_channel,
+    deactivate_invalid_credential,
+    joined_channels,
+)
 
 
 def date_to_slack_ts(value: str, *, end_of_day: bool = False) -> str:
@@ -18,28 +25,57 @@ def date_to_slack_ts(value: str, *, end_of_day: bool = False) -> str:
 
 
 async def run(limit: int, oldest: str | None, latest: str | None) -> None:
-    settings = get_settings()
-    if not settings.slack_bot_token:
-        raise SystemExit("SLACK_BOT_TOKEN is required for backfill.")
-
     init_db()
-    client = SlackApiClient(settings.slack_bot_token)
-    channels = await joined_channels(client)
-    if not channels:
-        print("No joined channels found. Invite the bot to a channel first.")
-        return
-
     with SessionLocal() as db:
-        for channel in channels:
-            count = await backfill_channel(
+        workspace = _active_workspace(db)
+        client = SlackApiClient(workspace.bot_token)
+        try:
+            channels = await joined_channels(client)
+        except SlackApiError as exc:
+            deactivate_invalid_credential(
                 db,
-                client,
-                channel["id"],
-                oldest=oldest,
-                latest=latest,
-                limit=limit,
+                team_id=workspace.team_id,
+                error=exc,
             )
+            raise SystemExit(f"Slack backfill failed: {exc.error_code}") from None
+        if not channels:
+            print("No joined public channels found. Invite the bot to a public channel first.")
+            return
+        for channel in channels:
+            try:
+                count = await backfill_channel(
+                    db,
+                    client,
+                    workspace,
+                    channel["id"],
+                    oldest=oldest,
+                    latest=latest,
+                    limit=limit,
+                )
+            except SlackApiError as exc:
+                if deactivate_invalid_credential(
+                    db,
+                    team_id=workspace.team_id,
+                    error=exc,
+                ):
+                    raise SystemExit("Slack backfill stopped: credential is invalid.") from None
+                print(
+                    f"Backfill failed for #{channel.get('name', channel['id'])}: "
+                    f"{exc.error_code}"
+                )
+                continue
             print(f"Backfilled {count} paper mentions from #{channel.get('name', channel['id'])}.")
+
+
+def _active_workspace(db):
+    settings = get_settings()
+    workspace = resolve_configured_workspace_context(
+        db,
+        settings=settings,
+    )
+    if workspace is None:
+        raise SystemExit("An active Slack installation is required for backfill.")
+    return workspace
 
 
 def main() -> None:

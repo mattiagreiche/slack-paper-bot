@@ -145,7 +145,29 @@ def test_paper_detail_opens_slack_permalink_in_new_tab(db_session):
 def test_slack_events_endpoint_ingests_message(db_session, monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "slack_signing_secret", "signing-secret")
-    monkeypatch.setattr(settings, "slack_bot_token", None)
+    monkeypatch.setattr(settings, "slack_oauth_migration_mode", True)
+    monkeypatch.setattr(settings, "slack_legacy_team_id", "T1")
+    monkeypatch.setattr(settings, "slack_bot_token", "xoxb-legacy")
+
+    class FakeClient:
+        def __init__(self, token):
+            assert token == "xoxb-legacy"
+
+        async def conversation_info(self, channel_id):
+            return {
+                "id": channel_id,
+                "name": "reading",
+                "is_private": False,
+                "is_member": True,
+            }
+
+        async def user_info(self, user_id):
+            return {"id": user_id, "name": "ada", "profile": {}}
+
+        async def permalink(self, channel_id, message_ts):
+            return None
+
+    monkeypatch.setattr("app.main.SlackApiClient", FakeClient)
     payload = {
         "type": "event_callback",
         "team_id": "T1",

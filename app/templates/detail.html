@@ -41,6 +41,30 @@
   </aside>
 </section>
 
+{% if related_run and related_suggestions %}
+<section class="detail-section related-section">
+  <h2>Related papers (bot-generated via Semantic Scholar)</h2>
+  <ol class="related-list">
+    {% for suggestion in related_suggestions %}
+    <li>
+      <a href="{{ suggestion.url or 'https://www.semanticscholar.org/paper/' ~ suggestion.suggested_paper_id }}" target="_blank" rel="noopener noreferrer">{{ suggestion.title }}</a>
+      <span>
+        {% if suggestion.authors %}{{ suggestion.authors.split("\n")[:2] | join(", ") }}{% if suggestion.authors.split("\n") | length > 2 %}, et al.{% endif %}{% endif %}
+        {% if suggestion.year %}{{ " - " if suggestion.authors else "" }}{{ suggestion.year }}{% endif %}
+        {% if suggestion.venue %}{{ " - " if suggestion.authors or suggestion.year else "" }}{{ suggestion.venue }}{% endif %}
+      </span>
+    </li>
+    {% endfor %}
+  </ol>
+  <p class="source-note"><a href="{{ semantic_scholar_source_url }}" target="_blank" rel="noopener noreferrer">View this paper on Semantic Scholar</a> for more discovery options.</p>
+</section>
+{% elif related_run and related_run.status in ["failed", "unavailable"] %}
+<section class="detail-section related-section">
+  <h2>Related papers (bot-generated via Semantic Scholar)</h2>
+  <p class="source-note">Related papers unavailable from Semantic Scholar.</p>
+</section>
+{% endif %}
+
 <div class="modal-backdrop" data-bibtex-modal hidden>
   <section class="bibtex-modal" role="dialog" aria-modal="true" aria-labelledby="bibtex-title">
     <div class="modal-title-row">

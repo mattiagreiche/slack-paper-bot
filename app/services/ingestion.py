@@ -14,7 +14,7 @@ URL_RE = re.compile(r"<(https?://[^>|]+)(?:\|[^>]+)?>|(https?://[^\s<>\)]+)")
 
 @dataclass(frozen=True)
 class SlackMessage:
-    team_id: str | None
+    team_id: str
     channel_id: str
     channel_name: str
     channel_is_private: bool
@@ -24,6 +24,7 @@ class SlackMessage:
     thread_ts: str | None
     text: str
     permalink: str | None = None
+    channel_is_member: bool = True
 
 
 def extract_urls(text: str) -> list[str]:
@@ -45,12 +46,19 @@ def ingest_slack_message(
     event_key: str | None = None,
     commit: bool = True,
 ) -> int:
-    if event_key and db.get(IngestionEvent, event_key):
+    if not message.team_id or message.channel_is_private or not message.channel_is_member:
+        return 0
+
+    namespaced_event_key = _team_event_key(message.team_id, event_key)
+    if namespaced_event_key and db.get(IngestionEvent, namespaced_event_key):
+        return 0
+
+    if has_slack_identity_collision(db, message):
         return 0
 
     _upsert_channel(db, message)
     if message.user_id:
-        _upsert_user(db, message.user_id, message.user_name)
+        _upsert_user(db, message.team_id, message.user_id, message.user_name)
 
     ingested = 0
     for url in extract_urls(message.text):
@@ -91,7 +99,8 @@ def ingest_slack_message(
             )
         )
         if exists:
-            exists.team_id = message.team_id or exists.team_id
+            if exists.team_id != message.team_id:
+                continue
             exists.channel_name = message.channel_name
             exists.user_name = message.user_name or exists.user_name
             exists.slack_permalink = message.permalink or exists.slack_permalink
@@ -114,8 +123,8 @@ def ingest_slack_message(
         )
         ingested += 1
 
-    if event_key:
-        db.add(IngestionEvent(key=event_key, source="slack", status="processed"))
+    if namespaced_event_key:
+        db.add(IngestionEvent(key=namespaced_event_key, source="slack", status="processed"))
 
     if commit:
         try:
@@ -141,6 +150,7 @@ def _upsert_channel(db: Session, message: SlackMessage) -> None:
         db.add(
             SlackChannel(
                 id=message.channel_id,
+                team_id=message.team_id,
                 name=message.channel_name,
                 is_private=message.channel_is_private,
             )
@@ -150,7 +160,12 @@ def _upsert_channel(db: Session, message: SlackMessage) -> None:
         channel.is_private = message.channel_is_private
 
 
-def _upsert_user(db: Session, user_id: str, user_name: str | None) -> None:
+def _upsert_user(
+    db: Session,
+    team_id: str,
+    user_id: str,
+    user_name: str | None,
+) -> None:
     user = db.get(SlackUser, user_id)
     if user is None:
         user = next(
@@ -158,10 +173,48 @@ def _upsert_user(db: Session, user_id: str, user_name: str | None) -> None:
             None,
         )
     if user is None:
-        db.add(SlackUser(id=user_id, display_name=user_name, real_name=user_name))
-    elif user_name:
-        user.display_name = user_name
-        user.real_name = user.real_name or user_name
+        db.add(
+            SlackUser(
+                id=user_id,
+                team_id=team_id,
+                display_name=user_name,
+                real_name=user_name,
+            )
+        )
+    else:
+        if user_name:
+            user.display_name = user_name
+            user.real_name = user.real_name or user_name
+
+
+def has_slack_identity_collision(db: Session, message: SlackMessage) -> bool:
+    channel = _existing_or_pending(db, SlackChannel, message.channel_id)
+    if channel is not None and channel.team_id != message.team_id:
+        return True
+    if not message.user_id:
+        return False
+    user = _existing_or_pending(db, SlackUser, message.user_id)
+    return user is not None and user.team_id != message.team_id
+
+
+def _existing_or_pending(db: Session, model, object_id: str):
+    existing = db.get(model, object_id)
+    if existing is not None:
+        return existing
+    return next(
+        (
+            obj
+            for obj in db.new
+            if isinstance(obj, model) and obj.id == object_id
+        ),
+        None,
+    )
+
+
+def _team_event_key(team_id: str, event_key: str | None) -> str | None:
+    if not event_key:
+        return None
+    return f"{team_id}:{event_key}"
 
 
 def slack_ts_to_datetime(ts: str) -> datetime | None:

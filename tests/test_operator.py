@@ -3,13 +3,13 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from app.auth import auth_token
-from app.config import get_settings
 from app.database import get_db
 from app.extractors.base import PaperMetadata
 from app.main import app
-from app.models import Paper, SlackChannel, ZoteroItemSync
+from app.models import Paper, RelatedPaperRun, SlackChannel, ZoteroItemSync
 from app.services.ingestion import SlackMessage, ingest_slack_message
 from app.services.metadata import apply_metadata
+from app.services.operator import redact_error
 
 
 def _client(db_session):
@@ -64,9 +64,7 @@ def _ready_paper(db_session) -> Paper:
     return paper
 
 
-def test_status_shows_operator_work_without_leaking_secrets(db_session, monkeypatch):
-    settings = get_settings()
-    monkeypatch.setattr(settings, "zotero_api_key", "zotero-secret")
+def test_status_shows_operator_work_without_leaking_secrets(db_session):
     paper = _paper(db_session)
     paper.metadata_status = "failed"
     paper.metadata_error = "provider failed token=zotero-secret"
@@ -82,6 +80,17 @@ def test_status_shows_operator_work_without_leaking_secrets(db_session, monkeypa
     assert "provider failed" in response.text
     assert "zotero-secret" not in response.text
     assert "token=[redacted]" in response.text
+
+
+def test_operator_error_redaction_covers_generic_api_keys_and_tokens():
+    redacted = redact_error(
+        "provider failed api_key=zotero-secret token=slack-secret"
+    )
+
+    assert "zotero-secret" not in redacted
+    assert "slack-secret" not in redacted
+    assert "api_key=[redacted]" in redacted
+    assert "token=[redacted]" in redacted
 
 
 def test_status_formats_slack_channel_timestamps(db_session):
@@ -156,6 +165,32 @@ def test_retry_zotero_marks_sync_pending_for_worker(db_session):
     assert sync.sync_error is None
     assert sync.next_sync_retry_at is not None
     assert sync.next_sync_retry_at < original_retry_at.replace(tzinfo=None)
+
+
+def test_retry_related_marks_run_pending_for_worker(db_session):
+    paper = _ready_paper(db_session)
+    run = RelatedPaperRun(
+        paper_id=paper.id,
+        status="failed",
+        error="Semantic Scholar failed",
+        next_retry_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    db_session.add(run)
+    db_session.commit()
+
+    client = _client(db_session)
+    response = client.post(
+        f"/operator/papers/{paper.id}/retry-related",
+        cookies=_auth_cookie(),
+        follow_redirects=False,
+    )
+    db_session.refresh(run)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/status"
+    assert run.status == "pending"
+    assert run.error is None
+    assert run.next_retry_at is None
 
 
 def test_retry_routes_require_authentication(db_session):

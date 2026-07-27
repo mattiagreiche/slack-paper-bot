@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import Paper, ZoteroItemSync, utcnow
+from app.services.related import retry_related_papers
 
 
 def retry_metadata(db: Session, paper_id: str) -> Paper | None:
@@ -37,6 +38,10 @@ def retry_zotero_sync(db: Session, paper_id: str) -> Paper | None:
     return paper
 
 
+def retry_related_sync(db: Session, paper_id: str) -> Paper | None:
+    return retry_related_papers(db, paper_id)
+
+
 def redact_error(value: str | None) -> str:
     if not value:
         return ""
@@ -48,7 +53,6 @@ def redact_error(value: str | None) -> str:
         settings.shared_password,
         settings.slack_signing_secret,
         settings.slack_bot_token,
-        settings.zotero_api_key,
     ]:
         if secret:
             text = text.replace(secret, "[redacted]")

@@ -6,6 +6,70 @@
   <h1>Ingestion status</h1>
 </section>
 
+<section class="operator-grid">
+  <article class="operator-card">
+    <p class="eyebrow">Slack workspace</p>
+    {% if slack_installation %}
+    <h2>{{ slack_installation.team_name }}</h2>
+    <dl class="status-list">
+      <div><dt>Workspace ID</dt><dd>{{ slack_installation.team_id }}</dd></div>
+      <div><dt>State</dt><dd>{{ "Active" if slack_installation.is_active else "Inactive" }}</dd></div>
+      <div><dt>Credential</dt><dd>{{ slack_installation.credential_status }}</dd></div>
+      <div><dt>Bot user</dt><dd>{{ slack_installation.bot_user_id }}</dd></div>
+      <div><dt>Scopes</dt><dd>{{ slack_installation.granted_scopes|join(", ") }}</dd></div>
+      <div><dt>Installed</dt><dd>{{ slack_installation.installed_at }}</dd></div>
+    </dl>
+    <p class="source-note">{{ slack_installation.status_message }}</p>
+    <div class="operator-actions">
+      {% if slack_installation.is_active %}
+      <form action="/operator/slack/deactivate" method="post">
+        <button class="button compact" type="submit">Deactivate</button>
+      </form>
+      {% else %}
+      <form action="/operator/slack/activate" method="post">
+        <button class="button compact" type="submit">Activate</button>
+      </form>
+      {% endif %}
+      <form action="/operator/slack/replace/start" method="post">
+        <button class="button compact secondary" type="submit">Replace workspace</button>
+      </form>
+    </div>
+    {% else %}
+    <h2>No workspace authorized</h2>
+    <p>Authorize a Slack workspace before configuring trial ingestion.</p>
+    <a class="button compact" href="/slack/install">Install in Slack</a>
+    {% endif %}
+    {% if latest_oauth_attempt %}
+    <p class="source-note">
+      Latest authorization: {{ latest_oauth_attempt.status }}
+      {% if latest_oauth_attempt.result_message %}&mdash; {{ latest_oauth_attempt.result_message }}{% endif %}
+    </p>
+    {% endif %}
+  </article>
+
+  <article class="operator-card">
+    <p class="eyebrow">Trial destination</p>
+    {% if zotero_destination %}
+    <h2>{{ zotero_destination.group_name or "Zotero group " ~ zotero_destination.group_id }}</h2>
+    <p>{{ "Verified" if zotero_destination.is_verified else "Not verified" }}</p>
+    <p class="source-note">{{ zotero_destination.status_message }}</p>
+    {% else %}
+    <h2>No Zotero destination</h2>
+    {% endif %}
+    <form class="operator-form" action="/operator/zotero-destination" method="post">
+      <label>
+        Zotero group ID
+        <input name="group_id" required value="{{ zotero_destination.group_id if zotero_destination else '' }}">
+      </label>
+      <label>
+        Zotero API key
+        <input name="api_key" type="password" autocomplete="new-password" required>
+      </label>
+      <button class="button compact" type="submit">Verify and save</button>
+    </form>
+  </article>
+</section>
+
 <section class="metric-grid">
   <div><strong>{{ counts.papers }}</strong><span>Papers</span></div>
   <div><strong>{{ counts.mentions }}</strong><span>Papers w/ dupes</span></div>
@@ -16,6 +80,10 @@
   <div><strong>{{ counts.zotero_pending }}</strong><span>Zotero pending</span></div>
   <div><strong>{{ counts.zotero_synced }}</strong><span>Zotero synced</span></div>
   <div><strong>{{ counts.zotero_failed }}</strong><span>Zotero failed</span></div>
+  <div><strong>{{ counts.related_pending }}</strong><span>Related pending</span></div>
+  <div><strong>{{ counts.related_ready }}</strong><span>Related ready</span></div>
+  <div><strong>{{ counts.related_unavailable }}</strong><span>Related unavailable</span></div>
+  <div><strong>{{ counts.related_failed }}</strong><span>Related failed</span></div>
 </section>
 
 <section class="table-section">
@@ -83,6 +151,38 @@
 </section>
 
 <section class="table-section">
+  <h2>Related-paper work</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Paper</th>
+        <th>Status</th>
+        <th>Error</th>
+        <th>Next retry</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in related_work %}
+      <tr>
+        <td><a href="/papers/{{ row.paper.id }}">{{ row.paper.title or row.paper.source_type ~ ":" ~ row.paper.source_id }}</a></td>
+        <td>{{ row.status }}</td>
+        <td class="error-cell">{% if row.error %}{{ row.error }}{% else %}&mdash;{% endif %}</td>
+        <td>{% if row.next_retry_at %}{{ row.next_retry_at }}{% else %}&mdash;{% endif %}</td>
+        <td>
+          <form action="/operator/papers/{{ row.paper.id }}/retry-related" method="post">
+            <button class="button compact" type="submit">Retry related</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">No pending, unavailable, or failed related-paper work.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="table-section">
   <h2>Channels</h2>
   <table>
     <thead>
@@ -114,7 +214,9 @@
     <thead>
       <tr>
         <th>Source</th>
+        <th>Team</th>
         <th>Status</th>
+        <th>Reason</th>
         <th>Recorded</th>
       </tr>
     </thead>
@@ -122,11 +224,13 @@
       {% for event in recent_events %}
       <tr>
         <td>{{ event.source }}</td>
+        <td>{{ event.team_id }}</td>
         <td>{{ event.status }}</td>
+        <td>{% if event.reason_code %}{{ event.reason_code }}{% else %}&mdash;{% endif %}</td>
         <td>{{ event.created_at }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="3">No ingestion events recorded yet.</td></tr>
+      <tr><td colspan="5">No ingestion events recorded yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>
