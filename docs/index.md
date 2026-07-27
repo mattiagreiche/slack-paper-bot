@@ -28,7 +28,8 @@ Slack Paper Archive is a FastAPI app that ingests scholarly links from Slack and
 ## How To Choose
 
 For Slack ingestion, read Architecture, Backend, API, and Testing.  
-For Zotero sync, read Architecture, Database, Backend, Security, and the spec.  
+For Zotero sync, read Architecture, Database, Backend, Security, and the Zotero trial spec.
+For related-paper generation, read Architecture, Backend, Database, Security, Testing, and the Zotero trial spec.
 For deployment questions, read Getting Started and Deployment.  
 For auth or privacy changes, read Authentication and Security.  
 For agent orchestration, read Agentic Workflow.

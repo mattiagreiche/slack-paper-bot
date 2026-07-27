@@ -8,6 +8,7 @@ The current MVP gives you:
 - Backfill for channels the bot has joined.
 - arXiv, DOI/Crossref, and Semantic Scholar metadata.
 - Zotero group item sync, channel-based collections, and bot-owned provenance notes.
+- Optional Semantic Scholar related-paper suggestions in Zotero `Bot notes`.
 - Operator status queues with metadata/Zotero retry controls.
 - Search by paper text, channel, sharer name, date, and share count.
 - Shared-password access.
@@ -26,15 +27,16 @@ Edit `.env`:
 APP_SECRET_KEY=replace-with-a-random-secret
 SHARED_PASSWORD=papers
 SLACK_SIGNING_SECRET=
-SLACK_BOT_TOKEN=
-ZOTERO_API_KEY=
-ZOTERO_GROUP_ID=
+SLACK_CLIENT_ID=
+SLACK_CLIENT_SECRET=
+SLACK_OAUTH_REDIRECT_URI=https://your-public-host/slack/oauth/callback
+CREDENTIAL_ENCRYPTION_KEY=
 ```
 
-Generate a secret if you want one:
+Generate the Fernet encryption key:
 
 ```bash
-openssl rand -hex 32
+python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
 ```
 
 Start the app:
@@ -51,21 +53,34 @@ http://localhost:8000
 
 Log in with `SHARED_PASSWORD`.
 
-Clear local data:
+Ordinary reset: clear archive and derived sync data while preserving the Slack
+Installation and Trial Zotero Destination:
 
 ```bash
 docker compose exec api python scripts/reset_archive.py
 ```
 
-Delete the whole Postgres volume:
+F-13 adds encrypted installation tables without Alembic migrations. Before the
+first OAuth test only, deliberately recreate the local schema:
 
 ```bash
 docker compose down -v
+docker compose up --build
 ```
+
+This one-time pre-OAuth recreation deletes the entire Postgres volume,
+including the archive and persisted credentials. It is not an ordinary reset.
+Use `scripts/reset_archive.py` for routine cleanup.
 
 ## Slack Setup
 
 Create a Slack app in your test workspace.
+
+In **OAuth & Permissions**, set the redirect URL:
+
+```text
+https://your-tunnel-or-domain/slack/oauth/callback
+```
 
 In **Event Subscriptions**:
 
@@ -87,13 +102,18 @@ channels:read
 users:read
 ```
 
-Install or reinstall the app. Slack only grants new scopes after reinstall.
+Save the scope configuration. Workspace authorization happens through the
+application's `/slack/install` OAuth flow below; after changing scopes, run
+that flow again so Slack grants the updated set.
 
-Copy the values into `.env`:
+Copy the Slack app credentials into `.env`:
 
 ```bash
 SLACK_SIGNING_SECRET=...
-SLACK_BOT_TOKEN=xoxb-...
+SLACK_CLIENT_ID=...
+SLACK_CLIENT_SECRET=...
+SLACK_OAUTH_REDIRECT_URI=https://your-tunnel-or-domain/slack/oauth/callback
+CREDENTIAL_ENCRYPTION_KEY=... # one stable Fernet key; see .env.example
 ```
 
 Restart Docker:
@@ -102,6 +122,10 @@ Restart Docker:
 docker compose down
 docker compose up --build
 ```
+
+Open `/slack/install` to authorize the workspace. A new installation remains
+inactive until its Trial Zotero Destination is verified and an operator
+activates it.
 
 Invite the bot to a channel:
 
@@ -113,23 +137,44 @@ Post an arXiv, DOI resolver, or Semantic Scholar paper link. New events should a
 
 The trial intentionally ignores private channels. Public channels are opt-in by inviting the bot.
 
+### Temporary bot-token migration bridge
+
+`SLACK_BOT_TOKEN` is not the supported installation path. Keep it only while
+reauthorizing the existing test workspace:
+
+```bash
+SLACK_OAUTH_MIGRATION_MODE=true
+SLACK_LEGACY_TEAM_ID=T0123456789
+SLACK_BOT_TOKEN=xoxb-temporary
+```
+
+Delete all three values after the OAuth-installed test workspace has passed
+both an Events API smoke test and a worker catch-up/backfill smoke test. Restart
+the stack and repeat the checks with migration mode off before removing the
+bridge variables and compatibility path from deployment/application config.
+
 ## Zotero Setup
 
-Create or choose a Zotero group library, then create a Zotero API key with write access to that group. Put these in `.env`:
+Create or choose a Zotero group library, then create a Zotero API key with write
+access to that group. Log in to the app, open `/status`, and enter the numeric
+group ID and API key under **Trial destination**. Select **Verify and save**.
 
-```bash
-ZOTERO_API_KEY=...
-ZOTERO_GROUP_ID=...
-```
-
-`ZOTERO_GROUP_ID` is the numeric ID in the Zotero group library URL. Restart Docker after changing these values:
-
-```bash
-docker compose down
-docker compose up --build
-```
+The verified destination is encrypted and persisted in Postgres; it is the sole
+production credential source for API and worker operations. Do not put its
+group ID or API key in `.env`. `ZOTERO_API_BASE_URL` remains an optional
+deployment setting for changing the verification form's default API endpoint.
 
 Once a paper has metadata, the worker creates a Zotero item in the group library, lazily creates a collection for the Slack channel, and writes one child note titled `Bot notes` with the Slack share history.
+
+To add Semantic Scholar related-paper suggestions to `Bot notes`, enable the optional worker feature:
+
+```bash
+RELATED_PAPERS_ENABLED=true
+RELATED_PAPERS_LIMIT=5
+SEMANTIC_SCHOLAR_API_KEY=...  # optional, but useful for rate limits
+```
+
+Suggestions are stored locally and rendered as bot-generated external suggestions. They are not automatically imported into Zotero as separate library items.
 
 ## Operator Status
 
@@ -137,10 +182,11 @@ Open `/status` after logging in to inspect:
 
 - pending and failed metadata work
 - pending and failed Zotero sync work
+- pending, unavailable, and failed related-paper work
 - recent ingestion events
 - channel backfill and catch-up timestamps
 
-Retry buttons reset failed metadata or Zotero sync state so the worker can try again immediately. Displayed errors are redacted before rendering.
+Retry buttons reset failed metadata, Zotero sync, or related-paper state so the worker can try again immediately. Displayed errors are redacted before rendering.
 
 ## Public Tunnel For Slack Testing
 
@@ -159,10 +205,15 @@ ngrok http 8000
 Use the HTTPS ngrok URL as:
 
 ```text
-https://your-ngrok-url/slack/events
+OAuth redirect:      https://your-ngrok-url/slack/oauth/callback
+Event subscription: https://your-ngrok-url/slack/events
 ```
 
 You do not need to restart ngrok when you restart Docker, as long as it still points to port `8000`.
+If the ngrok hostname changes, update both Slack URLs and
+`SLACK_OAUTH_REDIRECT_URI`, then restart the API before starting OAuth. The
+callback URL exchanges an authorization code; `/slack/events` receives signed
+event deliveries. They are not interchangeable.
 
 ## Backfill
 
@@ -274,4 +325,4 @@ Docker uses Postgres and matches the intended deployment shape.
 pytest
 ```
 
-The tests cover arXiv/DOI/Semantic Scholar normalization, Slack event parsing, dedupe, search filters, BibTeX, Zotero sync, operator retries, and backfill helpers.
+The tests cover arXiv/DOI/Semantic Scholar normalization, Slack event parsing, dedupe, search filters, BibTeX, Zotero sync, related-paper suggestions, operator retries, and backfill helpers.

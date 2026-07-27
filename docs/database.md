@@ -1,6 +1,6 @@
 # Database
 
-> **AI Context Summary**: SQLAlchemy models define canonical papers, citations, Slack channels/users, Slack mentions, ingestion events, and Zotero sync state. Uniqueness constraints enforce source-level paper dedupe and mention idempotency. There is no Alembic migration layer yet, so schema changes need explicit care.
+> **AI Context Summary**: SQLAlchemy models define canonical papers, citations, Slack channels/users, Slack mentions, one encrypted Slack Installation, one encrypted Trial Zotero Destination, OAuth attempts, Zotero sync state, and related-paper suggestion state. Uniqueness constraints enforce source-level paper dedupe, mention idempotency, and related-suggestion idempotency. There is no Alembic migration layer yet, so schema changes need explicit care.
 
 ## Overview
 
@@ -15,6 +15,9 @@ The application creates tables at startup with `Base.metadata.create_all` (`app/
 - **Canonical paper uniqueness** — `source_type` and `source_id` unique together (`app/models.py:25`).
 - **Mention uniqueness** — channel, message timestamp, and paper unique together (`app/models.py:88`).
 - **Zotero sync keys** — record group-library item, note, and channel collection mappings (`app/models.py:115`).
+- **Related-paper state** — records Semantic Scholar generation status and suggestion rows.
+- **Single installation** — one Slack workspace credential and activation state.
+- **Single Zotero destination** — one verified destination credential for the trial.
 - **Ingestion event key** — prevents repeated Slack/backfill work (`app/models.py:140`).
 
 ## Core Tables
@@ -27,6 +30,19 @@ The application creates tables at startup with `Base.metadata.create_all` (`app/
 
 `zotero_collection_syncs` maps Slack channel IDs to Zotero collection keys. `zotero_item_syncs` maps local papers to Zotero item and bot-note keys, records sync status/errors, and stores retry timing.
 
+`related_paper_runs` stores one Semantic Scholar recommendation state row per source paper. `related_paper_suggestions` stores ranked external suggestions, display metadata, stable identifiers, and uniqueness by source paper/provider/suggested paper.
+
+`slack_installations` stores the one workspace identity, bot identity, granted
+scopes, active state, and encrypted bot credential. `slack_oauth_attempts` stores
+hashed, expiring, one-time authorization state and credential-free outcomes.
+`trial_zotero_destinations` stores the single group ID, verification state, and
+encrypted Zotero credential. Plaintext Slack and Zotero credentials do not
+belong in database rows.
+
+The verified `trial_zotero_destinations` row is the sole production Zotero
+credential source. Operators configure it through authenticated `/status`;
+deployment environment variables do not supply a group ID or API key.
+
 ## Idempotency Rules
 
 `ingest_slack_message` exits early when an `event_key` already exists (`app/services/ingestion.py:48`). For each URL, it looks up the canonical paper by source identity before creating a new one (`app/services/ingestion.py:61`). Before inserting a mention, it checks for an existing channel/message/paper row (`app/services/ingestion.py:86`).
@@ -37,7 +53,21 @@ New sync features should mirror that style. A retry must update or no-op; it mus
 
 Before adding persistent production data, add a migration plan. Until migrations exist, schema changes are acceptable for local/demo data but should be called out clearly.
 
-Zotero item keys, collection mappings, Bot-Owned Note keys, and sync status are now persisted. Future generated curation should add separate tables for external related suggestions and bot-owned tag decisions rather than mixing that state into Slack mention rows.
+F-13 deliberately uses one destructive local schema recreation before its first
+OAuth test:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+No Alembic migration is implied. After that one-time step, ordinary
+`scripts/reset_archive.py` resets preserve installation and destination rows.
+The explicit `scripts/reset_credentials.py` flow removes only those credentials
+and requires reauthorization; it should not be replaced with routine volume
+deletion.
+
+Zotero item keys, collection mappings, Bot-Owned Note keys, and sync status are now persisted. External related suggestions are stored separately from factual metadata and Slack mentions. Future bot-owned tag decisions should follow the same pattern rather than mixing generated curation into Slack mention rows.
 
 ## Query Patterns
 

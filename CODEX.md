@@ -108,6 +108,7 @@ Core model:
 - `app/services/metadata.py`: arXiv metadata refresh.
 - `app/services/citations.py`: arXiv/Crossref BibTeX fetch.
 - `app/services/operator.py`: retry state reset and redacted operator error display.
+- `app/services/related.py`: Semantic Scholar related-paper suggestion generation and retry state.
 - `app/services/search.py`: keyword and filter search.
 - `app/services/zotero.py`: Zotero group item sync, collection mapping, and bot-owned provenance notes.
 - `app/extractors/arxiv.py`: arXiv URL normalization and Atom parsing.
@@ -136,6 +137,8 @@ Tables:
 - `ingestion_events`
 - `zotero_collection_syncs`
 - `zotero_item_syncs`
+- `related_paper_runs`
+- `related_paper_suggestions`
 
 `papers` stores source metadata and retry state for arXiv, DOI/Crossref, and Semantic Scholar items.
 
@@ -258,7 +261,13 @@ Verified in the user's real test Slack workspace:
 Required env vars:
 
 - `SLACK_SIGNING_SECRET`
-- `SLACK_BOT_TOKEN`
+- `SLACK_CLIENT_ID`
+- `SLACK_CLIENT_SECRET`
+- `SLACK_OAUTH_REDIRECT_URI`
+- `CREDENTIAL_ENCRYPTION_KEY`
+
+`SLACK_BOT_TOKEN` is temporary migration-only configuration, not the supported
+installation source.
 
 Slack bot scopes:
 
@@ -295,17 +304,37 @@ Implemented:
 
 Retry routes are authenticated with the same shared-password cookie as the local status/search pages. They do not perform external API calls directly; they make work eligible for the worker.
 
-Required Zotero env vars for real sync:
-
-- `ZOTERO_API_KEY`
-- `ZOTERO_GROUP_ID`
-
-Optional Zotero env vars:
+The Zotero group ID and API key are configured and verified through the
+authenticated `/status` page, then stored encrypted in Postgres. They are not
+read from environment variables.
 
 - `ZOTERO_API_BASE_URL`
 - `ZOTERO_SYNC_LIMIT`
 
-The worker runs metadata refresh first, then Zotero sync, then Slack catch-up. If Zotero env vars are absent, Zotero sync is a no-op.
+The worker first resolves the exact active Slack workspace and verified Zotero
+destination. It then refreshes metadata for that workspace, syncs Zotero,
+generates optional related-paper suggestions, refreshes changed Zotero notes,
+and performs Slack catch-up. Without both active contexts, it does no archive
+processing.
+
+## Related Paper Suggestions
+
+Implemented:
+
+- Optional Semantic Scholar Recommendations API integration.
+- `RELATED_PAPERS_ENABLED=false` by default.
+- Query identifiers:
+  - arXiv -> `ArXiv:<id>`
+  - DOI -> `DOI:<doi>`
+  - Semantic Scholar -> stored paper ID
+- Up to `RELATED_PAPERS_LIMIT` suggestions are stored per paper.
+- Self-recommendations are filtered by Semantic Scholar ID, arXiv ID, or DOI.
+- Suggestions are rendered into Zotero `Bot notes` as bot-generated external suggestions.
+- Suggestions are visible on local paper detail pages.
+- `/status` shows related-paper pending/ready/unavailable/failed counts.
+- `POST /operator/papers/{paper_id}/retry-related` resets related-paper generation for worker pickup.
+
+Related suggestions are never auto-imported as Zotero items. Temporary Semantic Scholar failures record retry state; not-found or empty responses become unavailable.
 
 Operational pattern:
 
@@ -350,6 +379,12 @@ For local Slack testing, run ngrok:
 ngrok http 8000
 ```
 
+Current development tunnel as of 2026-07-26:
+
+```text
+https://monstrous-sesame-defensive.ngrok-free.dev
+```
+
 Use:
 
 ```text
@@ -366,6 +401,50 @@ docker compose down -v
 `docker compose down` followed by `docker compose up --build` should preserve papers. If the site shows no results while Postgres still contains a paper, check `slack_mentions` and clear any browser search filters first: the results query displays papers through their Slack mentions.
 
 The user has used Docker Desktop and ngrok for Slack testing. Restart Docker after code or `.env` changes. Ngrok can stay running while Docker restarts as long as it still forwards to port `8000`.
+
+## Slack OAuth Trial
+
+Implemented from F-13 / SC-22 through SC-29:
+
+- Exactly one current Slack installation and one persisted Trial Zotero Destination.
+- OAuth routes:
+  - `GET /slack/install`
+  - `GET /slack/oauth/callback`
+  - authenticated activation, deactivation, and replacement controls on `/status`
+- Slack bot tokens and Zotero API keys are encrypted with `CREDENTIAL_ENCRYPTION_KEY`.
+- OAuth state is random, hashed at rest, expiring, one-time, and protected against overlapping callbacks.
+- A successful new or replacement authorization remains inactive until the Zotero destination is verified and an operator activates it.
+- Same-workspace reauthorization may remain active; a different-workspace replacement never does.
+- Events, metadata, catch-up, backfill, Zotero sync, and related-paper work are constrained to the exact active workspace.
+- Signed revocation/uninstall events invalidate the matching installation even when it is inactive.
+- Public channels only. Cross-workspace Slack channel/user ID collisions are rejected instead of relabeling historical data.
+- Ordinary `scripts/reset_archive.py` preserves installation, OAuth, and destination records.
+- `scripts/reset_credentials.py --confirm FULL-CREDENTIAL-RESET` explicitly removes persisted credentials.
+
+This release intentionally uses a one-time empty-database schema boundary instead of Alembic. Before first OAuth startup, recreate the disposable local Postgres volume. After credentials are persisted, do not use volume deletion as an ordinary reset.
+
+OAuth and Events use distinct Slack URLs:
+
+```text
+https://<host>/slack/oauth/callback
+https://<host>/slack/events
+```
+
+The temporary `SLACK_BOT_TOKEN` path is isolated behind `SLACK_OAUTH_MIGRATION_MODE` plus an exact `SLACK_LEGACY_TEAM_ID`, and is disabled as soon as an OAuth installation exists. Delete that bridge after the test-workspace OAuth smoke test succeeds.
+
+Verification after the OAuth-installed test-workspace smoke test:
+
+- `135 passed`
+- `docker compose config --quiet` passed
+- authenticated `/status` and `/slack/install` container smoke checks passed without exposing configured credentials
+- a signed Slack message event was ingested from an opted-in public channel and synced to the verified Zotero group
+- the legacy bot-token bridge is disabled and unset; the restarted worker continues catch-up using the persisted OAuth installation
+
+Milestone boundary:
+
+- Closed in this increment: encrypted single-workspace Slack OAuth, operator activation/replacement, public-channel workspace scoping, persisted Zotero destination, optional external related-paper suggestions, retry/status surfaces, and the live Slack-to-Zotero path.
+- Still open in the broader trial spec: journal/publisher/repository URL resolution, cross-source canonical merging, matching pre-existing Zotero items that lack the bot marker, generated topic tags, and production database migrations/deployment hardening.
+- Slack channel and user rows remain keyed by Slack object ID with fail-closed cross-workspace collision handling. Moving to composite workspace/object keys requires a deliberate schema migration before concurrent or collision-tolerant workspace history is supported.
 
 ## Auth And Privacy
 
@@ -422,9 +501,9 @@ Resolved deployment issue:
 
 Good next steps:
 
-- Add external related-paper suggestions in `Bot notes`.
-- Add Alembic migrations.
+- Add Alembic migrations before the next schema change that must preserve OAuth credentials.
 - Add database backups before any real deployment.
+- Specify and implement the Google Drive bridge intended to feed channel paper collections into Gemini Notebook.
 - Add publisher/journal page resolution, likely through Zotero translators or a dedicated metadata resolver.
 - Add OpenReview/ACL sources.
 - Add semantic search later with pgvector.

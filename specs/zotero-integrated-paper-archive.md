@@ -1,5 +1,5 @@
 # Spec: Zotero-Integrated Paper Archive — Trial
-**Source:** User request on 2026-06-29 plus existing Slack paper archive project memory
+**Source:** User request on 2026-06-29, existing Slack paper archive project memory, and Slack OAuth trial request on 2026-07-23
 **Epic:** N/A — single trial spec
 **Glossary:** specs/glossary.md
 **Generated:** 2026-06-29
@@ -28,6 +28,14 @@
 - **SC-19**: Bot-Owned Notes SHOULD contain human-useful content only and SHOULD NOT include machine-readable sync identifiers, stack traces, retry metadata, or debug details.
 - **SC-20**: External Related Items SHOULD be the first related-paper feature after plain Slack-to-Zotero sync. Internal Related Items MAY be added later, but are not required for the trial.
 - **SC-21**: External Related Items MUST NOT be automatically added to Zotero as library items unless a Zotero Group Member or Bot Operator explicitly chooses to add them later.
+- **SC-22**: Installation into a Slack workspace other than the app's development workspace MUST use Slack's supported OAuth installation flow.
+- **SC-23**: Slack installation credentials MUST be protected at rest and MUST NOT appear in browser responses, operator pages, logs, errors, Zotero content, or generated exports.
+- **SC-24**: Slack events, user and channel enrichment, backfill, and catch-up MUST use the credential belonging to the single Active Slack Installation. Events from any other workspace MUST NOT be processed with that credential.
+- **SC-25**: Completing Slack authorization MUST NOT expand the trial beyond opted-in public channels or grant the system permission to post into Slack.
+- **SC-26**: A newly authorized Slack Installation MUST NOT begin ingestion or Zotero sync until the Trial Zotero Destination has been configured and a Bot Operator activates the installation.
+- **SC-27**: A failed, cancelled, duplicated, expired, or forged OAuth attempt MUST NOT replace a valid Slack Installation or expose installation credentials.
+- **SC-28**: The trial MUST permit exactly one Active Slack Installation and one Trial Zotero Destination at a time. Concurrent multi-workspace processing is out of scope.
+- **SC-29**: An ordinary archive-data reset MUST preserve the Slack Installation and Trial Zotero Destination. Removing installation credentials MUST require a separate explicit full-reset action.
 
 ## Feature Specs
 
@@ -95,11 +103,13 @@
 - **GIVEN** a Canonical Item has pending metadata
 - **WHEN** the metadata source is available
 - **THEN** the system records available factual metadata appropriate to the item type, including title, creators, abstract or description, source identifier, canonical URL, PDF URL when available, categories or subjects when available, publication date when available, and updated date when available
+- **AND** for arXiv items, the arXiv API remains primary while the official arXiv abstract page MAY provide factual citation metadata when the API is rate-limited, unavailable, or times out
 
 **F-03.4: Metadata fetch fails**
 - **GIVEN** a metadata source is unavailable, returns malformed data, or does not contain the item
 - **WHEN** the system attempts to fetch metadata
 - **THEN** the system records the failure, keeps the Canonical Item and Slack Mention, and schedules or allows a retry
+- **AND** the Bot Operator can distinguish a timeout, rate limit, provider response, and other safe failure category even when the underlying exception has no message
 
 **F-03.5: Resolve identifier-backed scholarly links**
 - **GIVEN** a supported link contains or resolves to a stable scholarly identifier such as an arXiv ID, DOI, Semantic Scholar paper ID, PMID, or OpenAlex work ID
@@ -251,6 +261,8 @@
 
 **Requires:** F-03 (Canonical Item Metadata), F-04 (Zotero Group Library Item Sync)
 
+**Implementation detail:** Build External Related Items before internal related items, embeddings, or LLM-generated explanations. The first implementation uses Semantic Scholar's Recommendations API, stores suggestions locally, and renders them into Zotero `Bot notes` as clearly labeled bot-generated suggestions.
+
 **F-08.1: Generate internal related items**
 - **GIVEN** a Canonical Item has title and abstract or description metadata and the library contains other comparable items
 - **WHEN** internal related-item generation has been explicitly enabled
@@ -320,6 +332,232 @@
 - **GIVEN** new items have been added since similarity output was last generated
 - **WHEN** a Bot Operator explicitly refreshes generated curation
 - **THEN** the system can refresh bot-generated similarity output without modifying human-authored Zotero content
+
+#### F-08 External Related Papers: Semantic Scholar Implementation
+
+Use Semantic Scholar Recommendations API as the first External Related Items source:
+
+```text
+GET https://api.semanticscholar.org/recommendations/v1/papers/forpaper/{paper_id}
+```
+
+Request at most five suggestions per source paper. Request useful display fields:
+
+```text
+title,url,authors,year,abstract,venue,externalIds,citationCount,fieldsOfStudy,publicationTypes,publicationDate,openAccessPdf
+```
+
+Use an optional Semantic Scholar API key when configured. Treat Semantic Scholar as unreliable: unavailable, rate-limited, missing IDs, empty responses, and malformed responses are expected operational states.
+
+External related-paper generation constraints:
+
+- **F-08.SC-01:** Related papers MUST be generated only after a Canonical Item has enough metadata or a stable identifier to query Semantic Scholar.
+- **F-08.SC-02:** Related papers MUST be stored separately from factual item metadata and Slack provenance.
+- **F-08.SC-03:** Related papers MUST be labeled as bot-generated external suggestions in every user-visible and Zotero-visible surface.
+- **F-08.SC-04:** Related papers MUST NOT be automatically imported into Zotero as library items.
+- **F-08.SC-05:** Related-paper failure MUST NOT block Slack ingestion, factual metadata enrichment, Zotero item creation, channel collection membership, or Slack provenance note updates.
+- **F-08.SC-06:** The worker MUST NOT call Semantic Scholar on every page view or every worker loop for already-fresh suggestions.
+- **F-08.SC-07:** The system MUST NOT store full Slack message text while generating or displaying related papers.
+- **F-08.SC-08:** Bot-Owned Notes MUST contain human-useful suggestion details only. They MUST NOT contain Semantic Scholar raw payloads, stack traces, retry metadata, local database IDs, or secret-bearing errors.
+- **F-08.SC-09:** Suggested papers MAY include abstracts locally for operator review, but Zotero `Bot notes` SHOULD keep suggestions compact: title, authors, year, venue if available, Semantic Scholar URL, and stable identifiers if available.
+- **F-08.SC-10:** The first implementation SHOULD prefer a simple deterministic worker flow over LLM ranking or explanation.
+
+Identifier strategy:
+
+- **F-08.ID-01:** For a Semantic Scholar source item, query recommendations using the stored Semantic Scholar paper ID.
+- **F-08.ID-02:** For an arXiv source item, query recommendations using `ArXiv:<arxiv-id>`.
+- **F-08.ID-03:** For a DOI source item, query recommendations using `DOI:<doi>`.
+- **F-08.ID-04:** If Semantic Scholar rejects the identifier, the system records related-paper generation as unavailable for that Canonical Item.
+- **F-08.ID-05:** The system MAY later add a metadata lookup step to discover a Semantic Scholar paper ID for items that only have title, URL, PMID, OpenAlex ID, or publisher metadata.
+
+Data model requirements:
+
+- source Canonical Item ID
+- recommendation source, initially `semantic_scholar`
+- recommendation status: `pending`, `ready`, `unavailable`, or `failed`
+- recommendation error, redacted before display
+- fetch attempt count
+- next retry timestamp
+- last fetched timestamp
+- source query identifier used with Semantic Scholar
+- suggested paper identifier from Semantic Scholar
+- suggested title
+- suggested authors
+- suggested year or publication date
+- suggested venue
+- suggested URL
+- suggested abstract when available
+- suggested external IDs, such as DOI or arXiv
+- suggested citation count when available
+- suggested fields of study or publication types when available
+- suggestion rank
+
+Uniqueness requirements:
+
+- **F-08.DM-01:** A source Canonical Item MUST NOT store duplicate related suggestions for the same Semantic Scholar paper ID.
+- **F-08.DM-02:** Re-running generation for the same source item SHOULD update existing suggestion rows rather than append duplicate rows.
+- **F-08.DM-03:** If a suggestion later becomes a Canonical Item through normal Slack ingestion, the suggestion record MAY link to that Canonical Item, but the first implementation does not need to do this.
+
+Queueing related-paper generation:
+
+**F-08.15: Queue after successful Zotero sync**
+- **GIVEN** a Canonical Item has synced to Zotero
+- **AND** related-paper generation is enabled
+- **AND** the item has a Semantic Scholar-recognized identifier
+- **WHEN** worker processing completes the Zotero sync
+- **THEN** the system marks related-paper generation pending for that item
+
+**F-08.16: Do not queue when disabled**
+- **GIVEN** related-paper generation is disabled
+- **WHEN** a Canonical Item syncs to Zotero
+- **THEN** the system does not call Semantic Scholar and does not add related-paper content to `Bot notes`
+
+**F-08.17: Do not queue private-only items**
+- **GIVEN** a Canonical Item has only private-channel Slack Mentions
+- **WHEN** related-paper generation is considered
+- **THEN** the system does not generate or sync related-paper suggestions for that item during the trial
+
+**F-08.18: Explicit operator refresh**
+- **GIVEN** related-paper suggestions already exist for an item
+- **WHEN** a Bot Operator explicitly refreshes related papers
+- **THEN** the system may mark generation pending again even if suggestions are otherwise fresh
+
+Fetching related papers:
+
+**F-08.19: Fetch recommendations**
+- **GIVEN** an item has pending related-paper generation
+- **AND** the item has a Semantic Scholar-recognized query identifier
+- **WHEN** the worker calls Semantic Scholar
+- **THEN** the system stores up to five recommendations with rank and display metadata
+
+**F-08.20: Filter self-recommendations**
+- **GIVEN** Semantic Scholar returns the source paper as a recommendation
+- **WHEN** suggestions are stored
+- **THEN** the source paper is excluded from the suggestion list
+
+**F-08.21: Fewer than five suggestions**
+- **GIVEN** Semantic Scholar returns fewer than five recommendations
+- **WHEN** suggestions are stored
+- **THEN** the system stores the available suggestions and records the generation status as `ready`
+
+**F-08.22: Empty recommendations**
+- **GIVEN** Semantic Scholar recognizes the source paper but returns no recommendations
+- **WHEN** generation runs
+- **THEN** the system records the status as `unavailable` with a human-safe reason
+
+**F-08.23: Source paper not found**
+- **GIVEN** Semantic Scholar cannot find the source paper
+- **WHEN** generation runs
+- **THEN** the system records the status as `unavailable` and does not retry aggressively
+
+**F-08.24: Temporary failure**
+- **GIVEN** Semantic Scholar is down, rate-limited, times out, or returns malformed data
+- **WHEN** generation runs
+- **THEN** the system records the status as `failed`, increments attempts, stores a redacted error, and schedules retry with backoff
+
+Syncing related papers into Zotero `Bot notes`:
+
+**F-08.25: Include ready suggestions**
+- **GIVEN** a Canonical Item has ready related-paper suggestions
+- **WHEN** Zotero `Bot notes` are rendered
+- **THEN** the note includes a separate section titled `Related papers (bot-generated via Semantic Scholar)`
+
+**F-08.26: Suggestion display format**
+- **GIVEN** a related-paper suggestion has title, authors, year, venue, URL, and stable identifiers
+- **WHEN** the note is rendered
+- **THEN** the suggestion includes title, compact author list, year, venue if available, a link, and DOI/arXiv ID if available
+
+**F-08.27: Mark suggestions as generated**
+- **GIVEN** related-paper suggestions appear in Zotero
+- **WHEN** a Zotero Group Member reads the note
+- **THEN** the note makes clear that the suggestions are bot-generated and sourced from Semantic Scholar
+
+**F-08.28: Unavailable message**
+- **GIVEN** related-paper generation is unavailable or failed
+- **WHEN** Zotero `Bot notes` are rendered
+- **THEN** the note may include a short human-safe message such as `Related papers unavailable from Semantic Scholar.`
+
+**F-08.29: Do not expose debug details**
+- **GIVEN** related-paper generation has failed
+- **WHEN** Zotero `Bot notes` are rendered
+- **THEN** the note does not include stack traces, raw API errors, retry details, local sync IDs, or credentials
+
+**F-08.30: Preserve Slack provenance**
+- **GIVEN** related-paper suggestions exist
+- **WHEN** Zotero `Bot notes` are updated
+- **THEN** the note still includes all public Slack share history and does not remove previous provenance entries
+
+Local operator visibility:
+
+**F-08.31: Status counts**
+- **GIVEN** related-paper generation work exists
+- **WHEN** a Bot Operator opens `/status`
+- **THEN** the operator can see counts for pending, ready, unavailable, and failed related-paper generation
+
+**F-08.32: Failed work list**
+- **GIVEN** related-paper generation has failed for one or more items
+- **WHEN** a Bot Operator opens `/status`
+- **THEN** the operator can see affected item titles, redacted failure summaries, and next retry times
+
+**F-08.33: Retry failed related papers**
+- **GIVEN** related-paper generation failed for an item
+- **WHEN** a Bot Operator clicks retry
+- **THEN** the system marks related-paper generation pending and eligible for worker pickup
+
+**F-08.34: Detail page review**
+- **GIVEN** related-paper suggestions exist for an item
+- **WHEN** an authenticated viewer opens the local paper detail page
+- **THEN** the page may show suggestions separately from factual metadata and Slack mentions
+
+Manual import is deferred:
+
+**F-08.35: Do not auto-import suggestions**
+- **GIVEN** a related-paper suggestion is stored
+- **WHEN** Zotero sync runs
+- **THEN** the system does not create a Zotero item for that suggestion automatically
+
+**F-08.36: Future explicit import**
+- **GIVEN** a Bot Operator later chooses to import a suggestion
+- **WHEN** manual import is implemented
+- **THEN** the imported item should enter the same channel collection as the source paper and be marked as manually accepted
+
+Manual import is not required for the first related-paper implementation.
+
+Recommended first worker sequence:
+
+1. Metadata refresh.
+2. Zotero item/collection/provenance sync.
+3. Related-paper generation for eligible synced items.
+4. Zotero note refresh for items whose related-paper output changed.
+5. Slack catch-up.
+
+The implementation may use a different sequence if it preserves these guarantees:
+
+- related-paper failure does not block Zotero item creation
+- new related-paper output eventually appears in `Bot notes`
+- stable items are not refreshed forever without new work or an explicit operator action
+
+Suggested configuration:
+
+- `RELATED_PAPERS_ENABLED=false` by default unless the operator enables the feature
+- `RELATED_PAPERS_LIMIT=5`
+- `RELATED_PAPERS_RETRY_LIMIT` optional
+- `SEMANTIC_SCHOLAR_API_KEY` optional
+- `SEMANTIC_SCHOLAR_RECOMMENDATION_POOL=recent` by default, with `all-cs` as an optional alternative for computer-science-only trials
+
+Related-paper test scenarios:
+
+- Unit test Semantic Scholar query ID selection for arXiv, DOI, and Semantic Scholar source items.
+- Unit test parsing recommendation responses with full metadata, missing authors, missing venue, missing URL, and external IDs.
+- Unit test filtering out a self-recommendation.
+- Unit test retry/backoff behavior for temporary Semantic Scholar failures.
+- Unit test `unavailable` behavior for not-found and empty recommendation responses.
+- Integration test worker path: synced item -> related suggestions stored -> Zotero note refreshed.
+- Integration test that related-paper failure does not block Zotero item sync.
+- Web test status counts and retry route for failed related-paper generation.
+- Web/detail test related suggestions are shown separately from factual metadata.
+- Zotero note rendering test includes ready suggestions, labels them bot-generated, and excludes debug details.
+- Regression test suggestions are not auto-created as Zotero items.
 
 ### F-09: Generated Topic Labels and Tags | SHOULD
 
@@ -473,9 +711,140 @@
 - **WHEN** the link is processed
 - **THEN** the system does not create a Zotero Web Item during the first trial
 
+**F-12.7: No concurrent multi-workspace operation**
+- **GIVEN** the Slack app can be authorized by more than one workspace
+- **WHEN** the trial application runs
+- **THEN** it does not concurrently ingest, backfill, catch up, or sync content for more than one Slack workspace
+
+### F-13: Slack OAuth Workspace Installation | MUST
+
+**Requires:** F-01 (Opted-In Slack Channel Capture), F-02 (Historical Backfill and Catch-Up), F-11 (Trial Privacy and Access Boundaries)
+
+**F-13.1: Begin workspace authorization**
+- **GIVEN** a prospective installer opens the app's Slack installation entry point
+- **WHEN** the installation request is valid
+- **THEN** the installer is sent to Slack to approve only the bot permissions required for opted-in public-channel capture, channel lookup, and user lookup
+
+**F-13.2: Approve workspace installation**
+- **GIVEN** Slack has approved the requested permissions for a workspace
+- **WHEN** Slack returns a valid, unexpired authorization response
+- **THEN** the system records that workspace as the single Slack Installation, leaves it inactive pending operator activation, and shows the installer a clear completion result without exposing credentials
+- **AND** authorization remains valid when Slack grants additional bot permissions beyond the required set, while any missing required permission is reported by name
+
+**F-13.3: Cancel or deny authorization**
+- **GIVEN** an installer cancels authorization, denies permissions, or Slack rejects the request
+- **WHEN** the installer returns to the application
+- **THEN** the system shows a human-safe failure result and does not create, activate, or replace a Slack Installation
+
+**F-13.4: Reject invalid authorization state**
+- **GIVEN** an authorization response has missing, mismatched, reused, or expired request state
+- **WHEN** the system receives the response
+- **THEN** the system rejects it without exchanging credentials or changing any existing Slack Installation
+
+**F-13.5: Authorization exchange unavailable**
+- **GIVEN** Slack is unavailable, times out, or rejects an otherwise valid authorization exchange
+- **WHEN** installation completion is attempted
+- **THEN** the system reports that installation did not complete, records a credential-free diagnostic outcome, and leaves existing installations unchanged
+
+**F-13.6: Reinstall an existing workspace**
+- **GIVEN** the currently recorded Slack workspace successfully authorizes the app again
+- **WHEN** authorization completes
+- **THEN** the system updates that installation's current credentials, granted permissions, and bot identity without creating a duplicate installation
+- **AND** it preserves the prior active status only when all required permissions and Trial Zotero Destination access remain valid; otherwise it becomes inactive
+
+**F-13.7: Duplicate or concurrent authorization callbacks**
+- **GIVEN** Slack delivers the same successful authorization response more than once or completion attempts overlap
+- **WHEN** the responses are processed
+- **THEN** at most one Slack Installation exists and a valid newer installation is not overwritten by an older response
+
+**F-13.8: Installation awaits activation**
+- **GIVEN** a workspace has completed authorization
+- **WHEN** the Trial Zotero Destination has not been configured or a Bot Operator has not activated the installation
+- **THEN** the installation remains inactive and the system does not ingest events, run backfill or catch-up, or sync that workspace's content to Zotero
+
+**F-13.9: Activate an authorized workspace**
+- **GIVEN** an authorized workspace exists and the Trial Zotero Destination is configured
+- **WHEN** a Bot Operator activates the Slack Installation
+- **THEN** the installation becomes eligible for opted-in public-channel ingestion, enrichment, backfill, catch-up, and Zotero sync
+
+**F-13.10: Receive event from active installation**
+- **GIVEN** Slack sends a valid event for an active Slack Installation
+- **WHEN** the event belongs to an opted-in public channel
+- **THEN** the system processes it using that workspace's installation context and preserves the workspace identity on resulting channel, user, mention, and sync records
+
+**F-13.11: Receive event from unknown or inactive workspace**
+- **GIVEN** Slack sends a correctly signed event for a workspace with no active Slack Installation
+- **WHEN** the event is received
+- **THEN** the system performs no ingestion or enrichment, does not fall back to another workspace's credentials, and records a credential-free operator diagnostic
+
+**F-13.12: Run workspace-specific catch-up and backfill**
+- **GIVEN** one Active Slack Installation exists
+- **WHEN** catch-up or operator-requested backfill runs
+- **THEN** only eligible channels belonging to that active workspace are read using its credential
+
+**F-13.13: Preserve public-channel scope**
+- **GIVEN** a Slack Installation is active
+- **WHEN** the system discovers events or channels outside the trial's public-channel boundary
+- **THEN** it excludes private channels, direct messages, group direct messages, and channels where the bot is not opted in
+
+**F-13.14: Installation credential revoked**
+- **GIVEN** Slack revokes or invalidates an installation credential or the app is uninstalled from a workspace
+- **WHEN** the system next receives revocation information or attempts Slack access
+- **THEN** it marks the installation inactive, stops future Slack reads for that workspace, preserves previously ingested records and Zotero content, and exposes a credential-free operator status
+
+**F-13.15: Deactivate installation manually**
+- **GIVEN** a Slack Installation is active
+- **WHEN** a Bot Operator deactivates it
+- **THEN** new event ingestion, enrichment, catch-up, and backfill stop for that workspace without deleting prior records or previously synced Zotero content
+
+**F-13.16: Review installation status**
+- **GIVEN** a Slack Installation has been attempted
+- **WHEN** an authenticated Bot Operator reviews installation status
+- **THEN** the system shows workspace identity, active or inactive status, granted permission names, bot identity, installation time, and human-safe failures without exposing credentials
+
+**F-13.17: Existing development-workspace credential**
+- **GIVEN** the development workspace currently uses a manually configured bot credential
+- **WHEN** OAuth workspace installation becomes the supported trial path
+- **THEN** the development workspace is reauthorized through the same OAuth flow and verified before the manually configured credential path is removed
+
+**F-13.18: Use one trial Zotero destination**
+- **GIVEN** the Active Slack Installation is eligible for processing
+- **WHEN** a Canonical Item, Channel Collection, Bot-Owned Note, or generated curation output is synced
+- **THEN** the system writes it only to the configured Trial Zotero Destination
+
+**F-13.19: Missing or invalid Zotero destination**
+- **GIVEN** the Trial Zotero Destination is missing or its Zotero access has been revoked
+- **WHEN** activation or Zotero sync is attempted
+- **THEN** the installation cannot become newly active, or its Zotero sync pauses if already active, and no alternative Zotero destination is used as a fallback
+
+**F-13.20: Reject an unexpected second workspace**
+- **GIVEN** a Slack Installation is already recorded
+- **WHEN** a different Slack workspace attempts authorization without an explicit operator-approved replacement
+- **THEN** the system rejects the replacement, preserves the current installation and credentials, and shows a human-safe explanation
+
+**F-13.21: Replace the installed workspace**
+- **GIVEN** a Bot Operator intends to move the trial from the test workspace to Mila
+- **WHEN** the operator explicitly approves replacement and Mila successfully completes authorization
+- **THEN** Mila becomes the single inactive Slack Installation, the former workspace credential is no longer used, prior archive records are preserved, and Mila still requires activation before processing begins
+
+**F-13.22: Ordinary archive reset**
+- **GIVEN** a Bot Operator resets papers, mentions, channels, metadata, or sync state during development
+- **WHEN** the ordinary archive reset completes
+- **THEN** the Slack Installation, its active or inactive status, and the Trial Zotero Destination remain available
+
+**F-13.23: Explicit full reset**
+- **GIVEN** a Bot Operator intentionally requests a full reset that includes credentials
+- **WHEN** the operator confirms and completes that reset
+- **THEN** the Slack Installation and Trial Zotero Destination are removed, archive data is handled according to the reset request, and the system clearly reports that Slack must be authorized again
+
+**F-13.24: Preserve replaced-workspace records as history**
+- **GIVEN** the test workspace has been replaced by Mila
+- **WHEN** normal ingestion, backfill, catch-up, metadata, or Zotero sync work runs
+- **THEN** prior test-workspace records may remain available as historical local data but are not treated as Mila records or made eligible for new Mila processing
+
 ## Open Questions
 
-- **OQ-01**: No blocking open questions remain for the first implementation pass. Future implementation may still refine exact external recommendation source choice, tag normalization, and manual import UI details.
+- **OQ-01**: No blocking OAuth scope questions remain for the single-workspace trial.
 
 ## Assumptions
 
@@ -523,3 +892,12 @@
 - **A-42**: External Related Items should be implemented before rule-based generated tags.
 - **A-43**: A manually imported External Related Item should be added to the same Channel Collection as the item it was suggested from.
 - **A-44**: If external related papers are unavailable, the Bot-Owned Note should say that related papers are unavailable rather than silently omitting the section.
+- **A-45**: The trial supports exactly one Slack Installation and one Active Slack Installation at a time.
+- **A-46**: A newly authorized workspace remains inactive until a Bot Operator configures the Trial Zotero Destination and activates it.
+- **A-47**: Events and background reads from an unknown, replaced, or inactive workspace are ignored without falling back to another credential.
+- **A-48**: Reauthorization of the currently recorded workspace updates its installation idempotently and does not create duplicate records.
+- **A-49**: Previously ingested records and Zotero content are preserved when a Slack Installation is deactivated, revoked, or uninstalled.
+- **A-50**: The existing manually configured development-workspace credential remains available only until the test workspace is successfully reauthorized and verified through OAuth, after which the manual credential path is removed.
+- **A-51**: The test workspace is explicitly replaced by Mila after OAuth verification rather than remaining concurrently active.
+- **A-52**: The trial uses one configured Trial Zotero Destination because no pre-existing Mila Zotero library needs isolation during the initial local trial.
+- **A-53**: Ordinary archive resets preserve Slack authorization and the Trial Zotero Destination; only an explicit full reset removes them.

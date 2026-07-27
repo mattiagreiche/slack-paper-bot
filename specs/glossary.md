@@ -45,7 +45,7 @@ An optional curated list of lab, project, topic, method, or application terms th
 The single internal representation of a Zotero item after duplicate URL variants and identifiers have been resolved.
 
 **Slack Mention**
-One occurrence of a Canonical Item being shared in a Slack channel, including channel, sharer, timestamp, and Slack permalink when available.
+One occurrence of a Canonical Item being shared in a Slack channel, including workspace identity, channel, sharer, timestamp, and Slack permalink when available.
 
 **Scholarly Item**
 A Canonical Item representing a scholarly work, such as an arXiv preprint, DOI-backed article, Semantic Scholar paper, or journal article.
@@ -55,6 +55,18 @@ A Canonical Item representing a non-scholarly or weakly structured webpage, such
 
 **Opted-In Channel**
 A public Slack channel that the bot has been invited to and that the trial policy treats as eligible for monitoring.
+
+**Slack Installation**
+The authorization record created when a Slack Workspace Admin or other Slack-authorized installer grants the app its requested permissions. The trial stores only one current Slack Installation.
+
+**Active Slack Installation**
+The single Slack Installation that a Bot Operator has approved for trial processing and associated with the Trial Zotero Destination.
+
+**Inactive Slack Installation**
+A Slack Installation that has completed authorization but is pending approval, manually deactivated, revoked, uninstalled, or otherwise ineligible for Slack ingestion and background reads.
+
+**Trial Zotero Destination**
+The single Zotero group library and authorized write access used for the trial's Active Slack Installation.
 
 **Channel Collection**
 A Zotero collection automatically created for one opted-in Slack channel.

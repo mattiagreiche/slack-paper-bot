@@ -4,7 +4,12 @@
 
 ## Overview
 
-The existing test suite covers arXiv normalization, ingestion, Slack parsing/signing, web behavior, BibTeX, search filters, and backfill helpers. Tests should focus on behavior and idempotency, especially around duplicate Slack events, repeated shares, and external API failures.
+The test suite covers source normalization, workspace-scoped ingestion, Slack
+OAuth and request signing, encrypted credentials, installation activation and
+replacement, resets, web behavior, BibTeX, search, Zotero sync, Semantic Scholar
+suggestions, and backfill helpers. Tests focus on behavior and idempotency,
+especially around duplicate callbacks/events, repeated shares, and external API
+failures.
 
 ## Key Concepts
 
@@ -19,6 +24,9 @@ The existing test suite covers arXiv normalization, ingestion, Slack parsing/sig
 pytest tests/test_arxiv.py
 pytest tests/test_ingestion.py
 pytest tests/test_slack.py
+pytest tests/test_slack_oauth.py tests/test_installations.py tests/test_installation_runtime.py
+pytest tests/test_credentials.py tests/test_reset_credentials.py
+pytest tests/test_metadata.py tests/test_zotero.py tests/test_related.py
 pytest tests/test_web.py
 pytest tests/test_bibtex.py
 ```
@@ -62,6 +70,10 @@ def db_session():
 ```
 
 Avoid tests that depend on local `.env`, real Slack tokens, real arXiv timing, or Postgres-only behavior unless explicitly scoped as integration tests.
+
+Before closing a runtime milestone, also run `pytest -q`, `docker compose config
+--quiet`, an authenticated `/status` smoke check, and one live opted-in-channel
+Slack-to-Zotero smoke test. Keep live provider checks out of the automated suite.
 
 ## External API Strategy
 

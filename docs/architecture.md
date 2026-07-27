@@ -4,7 +4,12 @@
 
 ## Overview
 
-The app has three runtime services in Docker Compose: `api`, `worker`, and `db`. The `api` service serves FastAPI routes and templates, receives Slack Events at `/slack/events`, and stores normalized records. The `worker` service refreshes metadata and performs Slack catch-up for known channels. The `db` service is Postgres for Docker deployments.
+The app has three runtime services in Docker Compose: `api`, `worker`, and `db`.
+The `api` service serves FastAPI routes and templates, completes Slack OAuth,
+receives Slack Events at `/slack/events`, and stores normalized records. The
+worker refreshes metadata, syncs Zotero, generates optional Semantic Scholar
+suggestions, refreshes bot-owned notes, and performs Slack catch-up for the
+active workspace. The `db` service is Postgres for Docker deployments.
 
 Local direct development uses the same FastAPI application but defaults to SQLite through `Settings.database_url` (`app/config.py:10`). This is useful for quick tests and `uvicorn`, while Docker matches the intended deployment shape.
 
@@ -31,7 +36,9 @@ Slack message
   -> ingest_slack_message
   -> Paper + SlackMention + IngestionEvent
   -> worker refreshes metadata/citations
-  -> local UI and future Zotero sync read canonical records
+  -> worker syncs Zotero item + channel collection + Bot notes
+  -> optional Semantic Scholar suggestions refresh Bot notes
+  -> local UI reads canonical records and operator state
 ```
 
 Slack Events are intentionally silent. The app does not reply in Slack, post digests, or act like a chatbot. The first trial monitors only opted-in public channels.
@@ -56,9 +63,12 @@ The current database is created by `Base.metadata.create_all` (`app/database.py:
 
 Database models use SQLAlchemy ORM. Keep uniqueness and idempotency at both the service level and the database level where possible.
 
-## Planned Zotero Direction
+## Zotero And Curation Direction
 
-The first implementation pass should prove Slack-to-Zotero sync: a synced item, lazy channel collection creation, and a `Bot notes` note containing Slack provenance. External related papers come after plain sync and should appear in `Bot notes` as suggestions. Rule-based `auto:` tags come after external related papers.
+Slack-to-Zotero sync now creates or reuses an item, lazily creates the channel
+collection, and owns one `Bot notes` child note containing Slack provenance.
+Optional external related papers appear in that note as suggestions. Rule-based
+`auto:` tags remain future work.
 
 Do not auto-import external related papers. Manual import can come later, and accepted suggestions should inherit the source paper's channel collection.
 

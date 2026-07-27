@@ -1,6 +1,6 @@
 # Authentication
 
-> **AI Context Summary**: Local web access uses a shared-password cookie; Slack webhooks use Slack signature verification. These are separate trust boundaries. Future Zotero operator controls should use the local shared-password gate unless the access model changes.
+> **AI Context Summary**: Local web and operator access uses a shared-password cookie. Slack OAuth callbacks use one-time state, while Slack Events use request-signature verification. These are separate trust boundaries.
 
 ## Overview
 
@@ -20,7 +20,15 @@ Slack Events are authenticated by Slack request signatures. A valid shared web p
 
 Login reads form data, compares to `Settings.shared_password`, and sets an HTTP-only same-site cookie (`app/main.py:46`). Logout deletes the cookie (`app/main.py:62`).
 
-This gate protects search, details, BibTeX, and status pages. Future operator routes for Zotero sync should use the same gate unless the spec changes.
+This gate protects search, details, BibTeX, status, Slack activation/replacement,
+Zotero destination configuration, and retry routes.
+
+## Slack OAuth Auth
+
+`/slack/install` creates expiring random state whose hash is stored locally.
+`/slack/oauth/callback` must claim that state exactly once before exchanging an
+authorization code. A successful callback stores the bot credential encrypted
+and leaves a new workspace inactive until operator activation.
 
 ## Slack Request Auth
 
@@ -30,7 +38,10 @@ Do not skip this check for local tunnel testing. Configure `SLACK_SIGNING_SECRET
 
 ## Secrets
 
-Important secrets are `APP_SECRET_KEY`, `SHARED_PASSWORD`, `SLACK_SIGNING_SECRET`, and `SLACK_BOT_TOKEN`. Future Zotero credentials should be treated the same way.
+Important secrets are `APP_SECRET_KEY`, `SHARED_PASSWORD`,
+`SLACK_SIGNING_SECRET`, `SLACK_CLIENT_SECRET`,
+`CREDENTIAL_ENCRYPTION_KEY`, stored Slack bot credentials, and stored Zotero API
+credentials.
 
 Never print credentials in logs, status pages, tests, exceptions, or Zotero notes.
 
@@ -42,7 +53,9 @@ The Zotero trial excludes private Slack channels. Do not build logic that makes 
 
 The cookie value is deterministic for a given `APP_SECRET_KEY` and `SHARED_PASSWORD`. Changing either invalidates existing sessions, which is acceptable for the trial.
 
-The cookie is HTTP-only and same-site lax (`app/main.py:58`). If deployment moves behind HTTPS, keep cookie handling compatible with the reverse proxy and consider secure cookies when the environment is stable.
+The cookie is HTTP-only and same-site lax (`app/main.py:58`). A persistent HTTPS
+deployment must add secure-cookie handling together with trusted reverse-proxy
+configuration rather than exposing the development server directly.
 
 ## Testing Auth
 
